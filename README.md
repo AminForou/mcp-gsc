@@ -1,4 +1,5 @@
 # Google Search Console MCP server for SEOs
+[![smithery badge](https://smithery.ai/badge/@AminForou/mcp-gsc)](https://smithery.ai/server/@AminForou/mcp-gsc)
 
 A tool that connects [Google Search Console](https://search.google.com/search-console/about) (GSC) with Claude AI, allowing you to analyze your SEO data through natural language conversations. This integration gives you access to property information, search analytics, URL inspection, and sitemap management—all through simple chat with Claude.
 
