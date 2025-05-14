@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/aminforou-mcp-gsc-badge.png)](https://mseep.ai/app/aminforou-mcp-gsc)
+
 # Google Search Console MCP server for SEOs
 
 A tool that connects [Google Search Console](https://search.google.com/search-console/about) (GSC) with Claude AI, allowing you to analyze your SEO data through natural language conversations. This integration gives you access to property information, search analytics, URL inspection, and sitemap management—all through simple chat with Claude.
