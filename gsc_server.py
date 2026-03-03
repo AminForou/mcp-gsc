@@ -1459,6 +1459,47 @@ Amin combines technical SEO knowledge with programming skills to create innovati
 """
     return creator_info
 
+@mcp.tool()
+async def reauthenticate() -> str:
+    """
+    Perform a logout and new login sequence.
+    Deletes the current OAuth token file and triggers the browser authentication flow.
+    Useful when you need to switch to a different Google account.
+    """
+    try:
+        # Delete existing token to force re-authentication
+        if os.path.exists(TOKEN_FILE):
+            os.remove(TOKEN_FILE)
+            token_deleted = True
+        else:
+            token_deleted = False
+
+        # Check if OAuth client secrets file exists
+        if not os.path.exists(OAUTH_CLIENT_SECRETS_FILE):
+            return (
+                "Error: OAuth client secrets file not found. "
+                "Cannot start new authentication flow. "
+                "Please ensure client_secrets.json is present or set the "
+                "GSC_OAUTH_CLIENT_SECRETS_FILE environment variable."
+            )
+
+        # Trigger new OAuth flow — this opens a browser window on the local machine
+        flow = InstalledAppFlow.from_client_secrets_file(OAUTH_CLIENT_SECRETS_FILE, SCOPES)
+        creds = flow.run_local_server(port=0)
+
+        # Save the new credentials for future use
+        with open(TOKEN_FILE, "w") as token:
+            token.write(creds.to_json())
+
+        msg = "Successfully authenticated with a new Google account."
+        if token_deleted:
+            msg = "Previous session deleted. " + msg
+        return msg
+
+    except Exception as e:
+        return f"Error during reauthentication: {str(e)}"
+
+
 if __name__ == "__main__":
     # Start the MCP server on stdio transport
     mcp.run(transport="stdio")
