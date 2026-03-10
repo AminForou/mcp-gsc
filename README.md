@@ -1,6 +1,6 @@
 # Google Search Console MCP server for SEOs
 
-> **March 2026 (v0.2.0):** Data now matches the GSC dashboard by default, flexible row limits, and multi-dimension filtering. See the [Changelog](#changelog) for details.
+> **March 2026 (v0.2.1):** Data freshness, flexible row limits, multi-dimension filtering, reauthenticate tool, bug fixes, and multi-client support. See the [Changelog](#changelog) for details.
 
 A Model Context Protocol (MCP) server that connects [Google Search Console](https://search.google.com/search-console/about) (GSC) to AI assistants, allowing you to analyze your SEO data through natural language conversations. Works with **Claude**, **Cursor**, **Codex**, **Gemini CLI**, **Antigravity**, and any other MCP-compatible client. This integration gives you access to property information, search analytics, URL inspection, and sitemap management—all through simple chat.
 
@@ -421,6 +421,22 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
 - **Data freshness:** All search analytics queries now use `dataState: "all"` by default, returning data that matches the GSC dashboard instead of finalized-only data (which lags 2–3 days). Configurable via the `GSC_DATA_STATE` environment variable (`"all"` or `"final"`).
 - **Flexible row limits:** `get_search_analytics` and `get_search_by_page_query` now accept an optional `row_limit` parameter (default 20, max 500). Claude will automatically choose an appropriate value based on your request — use higher values for comprehensive analysis, lower values for quick overviews.
 - **Multi-dimension filtering:** `get_advanced_search_analytics` now accepts a `filters` parameter — a JSON array of filter objects for AND logic across multiple dimensions simultaneously (e.g., country = USA **and** device = mobile). The existing single-filter parameters (`filter_dimension`, `filter_operator`, `filter_expression`) remain fully supported.
+
+### [0.2.1] — March 2026
+
+#### Added
+- **Reauthenticate tool:** New `reauthenticate` tool lets you switch Google accounts by deleting the saved OAuth token and triggering a fresh browser login. Ask your AI assistant: *"switch to a different Google account"*. (Thanks [@fterenzani](https://github.com/fterenzani)!)
+
+#### Fixed
+- **Sitemap TypeError crash:** `get_sitemaps` and `list_sitemaps_enhanced` crashed with `TypeError` when a sitemap had errors or warnings, because the GSC API returns those counts as strings. Added `int()` casts before comparison. (Thanks [@mcprobert](https://github.com/mcprobert)!)
+- **File cache warning:** Suppressed the `file_cache is only supported with oauth2client<4.0.0` warning that caused crashes on MCP hosts that treat any stderr output as fatal (e.g. GitHub Copilot CLI).
+- **Domain property 404 errors:** All tools now return a clear, actionable message when a 404 occurs, explaining the exact format required and service account permission requirements for `sc-domain:` properties.
+
+#### Improved
+- **Multi-client support:** README now explicitly lists Claude, Cursor, Codex, Gemini CLI, and Antigravity as supported clients with setup guidance for each.
+- **`site_url` guidance:** All 15 tool docstrings now explain how to get the exact property URL from `list_properties` and how domain properties relate to subdomain filtering.
+
+---
 
 ### [0.1.0] — Initial release
 
