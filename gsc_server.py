@@ -437,13 +437,13 @@ async def get_sitemaps(site_url: str) -> str:
                     pass
             
             status = "Valid"
-            if "errors" in sitemap and sitemap["errors"] > 0:
+            if "errors" in sitemap and int(sitemap["errors"]) > 0:
                 status = "Has errors"
             
             # Get counts
-            warnings = sitemap.get("warnings", 0)
-            errors = sitemap.get("errors", 0)
-            
+            warnings = int(sitemap.get("warnings", 0))
+            errors = int(sitemap.get("errors", 0))
+
             # Get contents if available
             indexed_urls = "N/A"
             if "contents" in sitemap:
@@ -1295,9 +1295,9 @@ async def list_sitemaps_enhanced(site_url: str, sitemap_index: str = None) -> st
             sitemap_type = "Index" if sitemap.get("isSitemapsIndex", False) else "Sitemap"
             
             # Get counts
-            errors = sitemap.get("errors", 0)
-            warnings = sitemap.get("warnings", 0)
-            
+            errors = int(sitemap.get("errors", 0))
+            warnings = int(sitemap.get("warnings", 0))
+
             # Get URL counts
             url_count = "N/A"
             if "contents" in sitemap:
