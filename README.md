@@ -2,7 +2,7 @@
 
 > **March 2026 (v0.2.0):** Data now matches the GSC dashboard by default, flexible row limits, and multi-dimension filtering. See the [Changelog](#changelog) for details.
 
-A tool that connects [Google Search Console](https://search.google.com/search-console/about) (GSC) with Claude AI, allowing you to analyze your SEO data through natural language conversations. This integration gives you access to property information, search analytics, URL inspection, and sitemap management—all through simple chat with Claude.
+A Model Context Protocol (MCP) server that connects [Google Search Console](https://search.google.com/search-console/about) (GSC) to AI assistants, allowing you to analyze your SEO data through natural language conversations. Works with **Claude**, **Cursor**, **Codex**, **Gemini CLI**, **Antigravity**, and any other MCP-compatible client. This integration gives you access to property information, search analytics, URL inspection, and sitemap management—all through simple chat.
 
 ---
 
@@ -37,7 +37,7 @@ A tool that connects [Google Search Console](https://search.google.com/search-co
 
 ## Available Tools
 
-Here's what you can ask Claude to do once you've set up this integration:
+Here's what you can ask your AI assistant to do once you've set up this integration:
 
 | **What You Can Ask For**        | **What It Does**                                            | **What You'll Need to Provide**                                 |
 |---------------------------------|-------------------------------------------------------------|----------------------------------------------------------------|
@@ -52,7 +52,7 @@ Here's what you can ask Claude to do once you've set up this integration:
 | `get_sitemaps`                  | Lists all sitemaps for your site                            | Your website URL                                                |
 | `submit_sitemap`                | Submits a new sitemap to Google                             | Your website URL and sitemap URL                                |
 
-*For a complete list of all 19 available tools and their detailed descriptions, ask Claude to "list tools" after setup.*
+*For a complete list of all 19 available tools and their detailed descriptions, ask your AI assistant to "list tools" after setup.*
 
 ---
 
@@ -60,7 +60,7 @@ Here's what you can ask Claude to do once you've set up this integration:
 
 ### 1. Set Up Google Search Console API Access
 
-Before using this tool, you'll need to create API credentials that allow Claude to access your GSC data:
+Before using this tool, you'll need to create API credentials that allow your AI assistant to access your GSC data:
 
 #### Authentication Options
 
@@ -120,9 +120,9 @@ This method uses a service account, which is useful for automated scripts or whe
 
 You'll need to install these tools on your computer:
 
-- [Python](https://www.python.org/downloads/) (version 3.11 or newer) - This runs the connection between GSC and Claude
+- [Python](https://www.python.org/downloads/) (version 3.11 or newer) - This runs the MCP server
 - [Node.js](https://nodejs.org/en) - Required for running the MCP inspector and certain MCP components
-- [Claude Desktop](https://claude.ai/download) - The AI assistant you'll chat with
+- An MCP-compatible AI client — [Claude Desktop](https://claude.ai/download), [Cursor](https://www.cursor.com/), [Codex CLI](https://github.com/openai/codex), [Gemini CLI](https://github.com/google-gemini/gemini-cli), or [Antigravity](https://antigravity.ai/) are all supported
 
 Make sure both Python and Node.js are properly installed and available in your system path before proceeding.
 
@@ -199,10 +199,12 @@ Open your computer's Terminal (Mac) or Command Prompt (Windows):
 
 When you see `(.venv)` at the beginning of your command prompt, it means the virtual environment is active and the dependencies will be installed there without affecting your system Python installation.
 
-### 5. Connect Claude to Google Search Console
+### 5. Connect Your AI Client to Google Search Console
+
+The configuration below uses Claude Desktop as an example. For other clients (Cursor, Codex, Gemini CLI, Antigravity), the JSON structure is the same — check your client's documentation for where the config file lives.
 
 1. Download and install [Claude Desktop](https://claude.ai/download) if you haven't already
-2. Make sure you have your Google service account credentials file saved somewhere on your computer
+2. Make sure you have your Google credentials file saved somewhere on your computer
 3. Open your computer's Terminal (Mac) or Command Prompt (Windows) and type:
 
 ```bash
@@ -213,7 +215,7 @@ When you see `(.venv)` at the beginning of your command prompt, it means the vir
    notepad %APPDATA%\Claude\claude_desktop_config.json
    ```
 
-4. Add the following configuration text (this tells Claude how to connect to GSC):
+4. Add the following configuration text (this tells your AI client how to connect to GSC):
 
 #### OAuth authentication (using your own account)
 
@@ -277,12 +279,12 @@ When you see `(.venv)` at the beginning of your command prompt, it means the vir
    - Mac: Press Ctrl+O, then Enter, then Ctrl+X to exit
    - Windows: Click File > Save, then close Notepad
 
-6. Restart Claude Desktop
-7. When Claude opens, you should now see GSC tools available in the tools section
+6. Restart your AI client
+7. When it opens, you should now see GSC tools available in the tools section
 
 ### 6. Start Analyzing Your SEO Data!
 
-Now you can ask Claude questions about your GSC data! Claude can not only retrieve the data but also analyze it, explain trends, and create visualizations to help you understand your SEO performance better.
+Now you can ask your AI assistant questions about your GSC data! It can not only retrieve the data but also analyze it, explain trends, and create visualizations to help you understand your SEO performance better.
 
 Here are some powerful prompts you can use with each tool:
 
@@ -305,7 +307,7 @@ Here are some powerful prompts you can use with each tool:
 | `compare_search_periods`        | "Compare my site's performance between January and February. What queries improved the most, which declined, and what might explain these changes?" |
 | `get_advanced_search_analytics` | "Analyze queries with high impressions but positions below 10, filtered to mobile traffic in the US only. Use `filters` with country=usa and device=MOBILE." |
 
-You can also ask Claude to combine multiple tools and analyze the results. For example:
+You can also ask your AI assistant to combine multiple tools and analyze the results. For example:
 
 - "Find my top 20 landing pages by traffic, check their indexing status, and create a report highlighting any pages with both high traffic and indexing issues."
 
@@ -315,13 +317,13 @@ You can also ask Claude to combine multiple tools and analyze the results. For e
 
 - "Identify queries where I'm ranking on page 2 (positions 11-20) that have high impressions but low CTR, then inspect the corresponding URLs and suggest title and meta description improvements."
 
-Claude will use the GSC tools to fetch the data, present it in an easy-to-understand format, create visualizations when helpful, and provide actionable insights based on the results.
+Your AI assistant will use the GSC tools to fetch the data, present it in an easy-to-understand format, create visualizations when helpful, and provide actionable insights based on the results.
 
 ---
 
 ## Data Visualization Capabilities
 
-Claude can help you visualize your GSC data in various ways:
+Your AI assistant can help you visualize your GSC data in various ways:
 
 - **Trend Charts**: See how metrics change over time
 - **Comparison Graphs**: Compare different time periods or dimensions
@@ -329,7 +331,7 @@ Claude can help you visualize your GSC data in various ways:
 - **Correlation Analysis**: Identify relationships between different metrics
 - **Heatmaps**: Visualize complex datasets with color-coded representations
 
-Simply ask Claude to "visualize" or "create a chart" when analyzing your data, and it will generate appropriate visualizations to help you understand the information better.
+Simply ask your AI assistant to "visualize" or "create a chart" when analyzing your data, and it will generate appropriate visualizations to help you understand the information better.
 
 ---
 
@@ -357,14 +359,14 @@ If you encounter errors related to Python not being found, you can create an ali
 
 This creates a symbolic link so that when applications call `python`, they'll actually use your `python3` installation.
 
-### Claude Configuration Issues
+### AI Client Configuration Issues
 
 If you're having trouble connecting:
 
 1. Make sure all file paths in your configuration are correct and use the full path
 2. Check that your service account has access to your GSC properties
-3. Restart Claude Desktop after making any changes
-4. Look for error messages in Claude's response when you try to use a tool
+3. Restart your AI client after making any changes
+4. Look for error messages in the response when you try to use a tool
 5. Ensure your virtual environment is activated when running the server manually
 
 ### Other Unexpected Issues

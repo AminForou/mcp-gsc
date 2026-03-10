@@ -1,4 +1,5 @@
 from typing import Any, Dict, List, Optional
+import logging
 import os
 import json
 from datetime import datetime, timedelta
@@ -10,6 +11,11 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+
+# Suppress the noisy file_cache warning from google-api-python-client.
+# Some MCP hosts (e.g. GitHub Copilot CLI) treat any stderr output as a
+# fatal error, so this prevents false crashes.
+logging.getLogger("googleapiclient.discovery_cache").setLevel(logging.ERROR)
 
 # MCP
 from mcp.server.fastmcp import FastMCP
@@ -73,7 +79,7 @@ def get_gsc_service():
                 creds = service_account.Credentials.from_service_account_file(
                     cred_path, scopes=SCOPES
                 )
-                return build("searchconsole", "v1", credentials=creds)
+                return build("searchconsole", "v1", credentials=creds, cache_discovery=False)
             except Exception as e:
                 continue  # Try the next path if this one fails
     
@@ -134,7 +140,7 @@ def get_gsc_service_oauth():
                 token.write(creds.to_json())
     
     # Build and return the service
-    return build("searchconsole", "v1", credentials=creds)
+    return build("searchconsole", "v1", credentials=creds, cache_discovery=False)
 
 
 def _site_not_found_error(site_url: str) -> str:
