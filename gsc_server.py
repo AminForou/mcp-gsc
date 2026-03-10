@@ -136,6 +136,31 @@ def get_gsc_service_oauth():
     # Build and return the service
     return build("searchconsole", "v1", credentials=creds)
 
+
+def _site_not_found_error(site_url: str) -> str:
+    """Return a helpful message when a GSC property returns 404."""
+    lines = [f"Property '{site_url}' not found (404). Possible causes:\n"]
+    lines.append(
+        "1. The site_url doesn't exactly match what is in GSC. "
+        "Run list_properties to get the exact string to use."
+    )
+    if site_url.startswith("sc-domain:"):
+        lines.append(
+            "2. Domain properties require the service account to be explicitly added "
+            "under GSC Settings > Users and permissions for that specific domain property. "
+            "OAuth users must also have verified access to it."
+        )
+    else:
+        lines.append(
+            "2. If your property is a domain property (covers all subdomains), "
+            "the correct format is 'sc-domain:example.com', not a full URL."
+        )
+    lines.append(
+        "3. The authenticated account may not have access to this property."
+    )
+    return "\n".join(lines)
+
+
 @mcp.tool()
 async def list_properties() -> str:
     """
@@ -288,7 +313,9 @@ async def get_search_analytics(site_url: str, days: int = 28, dimensions: str = 
     Get search analytics data for a specific property.
     
     Args:
-        site_url: The URL of the site in Search Console (must be exact match)
+        site_url: Exact GSC property URL from list_properties (e.g. "https://example.com/" or
+                  "sc-domain:example.com"). Domain properties cover all subdomains — use the
+                  domain property as site_url and filter by page to analyze a specific subdomain.
         days: Number of days to look back (default: 28)
         dimensions: Dimensions to group by (default: query). Options: query, page, device, country, date
                    You can provide multiple dimensions separated by comma (e.g., "query,page")
@@ -350,6 +377,8 @@ async def get_search_analytics(site_url: str, days: int = 28, dimensions: str = 
         
         return "\n".join(result_lines)
     except Exception as e:
+        if "404" in str(e):
+            return _site_not_found_error(site_url)
         return f"Error retrieving search analytics: {str(e)}"
 
 @mcp.tool()
@@ -358,7 +387,9 @@ async def get_site_details(site_url: str) -> str:
     Get detailed information about a specific Search Console property.
     
     Args:
-        site_url: The URL of the site in Search Console (must be exact match)
+        site_url: Exact GSC property URL from list_properties (e.g. "https://example.com/" or
+                  "sc-domain:example.com"). Domain properties cover all subdomains — use the
+                  domain property as site_url and filter by page to analyze a specific subdomain.
     """
     try:
         service = get_gsc_service()
@@ -403,7 +434,9 @@ async def get_sitemaps(site_url: str) -> str:
     List all sitemaps for a specific Search Console property.
     
     Args:
-        site_url: The URL of the site in Search Console (must be exact match)
+        site_url: Exact GSC property URL from list_properties (e.g. "https://example.com/" or
+                  "sc-domain:example.com"). Domain properties cover all subdomains — use the
+                  domain property as site_url and filter by page to analyze a specific subdomain.
     """
     try:
         service = get_gsc_service()
@@ -456,6 +489,8 @@ async def get_sitemaps(site_url: str) -> str:
         
         return "\n".join(result_lines)
     except Exception as e:
+        if "404" in str(e):
+            return _site_not_found_error(site_url)
         return f"Error retrieving sitemaps: {str(e)}"
 
 @mcp.tool()
@@ -464,7 +499,9 @@ async def inspect_url_enhanced(site_url: str, page_url: str) -> str:
     Enhanced URL inspection to check indexing status and rich results in Google.
     
     Args:
-        site_url: The URL of the site in Search Console (must be exact match, for domain properties use format: sc-domain:example.com)
+        site_url: Exact GSC property URL from list_properties (e.g. "https://example.com/" or
+                  "sc-domain:example.com"). Domain properties cover all subdomains — use the
+                  domain property as site_url and filter by page to analyze a specific subdomain.
         page_url: The specific URL to inspect
     """
     try:
@@ -574,6 +611,8 @@ async def inspect_url_enhanced(site_url: str, page_url: str) -> str:
         
         return "\n".join(result_lines)
     except Exception as e:
+        if "404" in str(e):
+            return _site_not_found_error(site_url)
         return f"Error inspecting URL: {str(e)}"
 
 @mcp.tool()
@@ -582,7 +621,9 @@ async def batch_url_inspection(site_url: str, urls: str) -> str:
     Inspect multiple URLs in batch (within API limits).
     
     Args:
-        site_url: The URL of the site in Search Console (must be exact match, for domain properties use format: sc-domain:example.com)
+        site_url: Exact GSC property URL from list_properties (e.g. "https://example.com/" or
+                  "sc-domain:example.com"). Domain properties cover all subdomains — use the
+                  domain property as site_url and filter by page to analyze a specific subdomain.
         urls: List of URLs to inspect, one per line
     """
     try:
@@ -656,7 +697,9 @@ async def check_indexing_issues(site_url: str, urls: str) -> str:
     Check for specific indexing issues across multiple URLs.
     
     Args:
-        site_url: The URL of the site in Search Console (must be exact match, for domain properties use format: sc-domain:example.com)
+        site_url: Exact GSC property URL from list_properties (e.g. "https://example.com/" or
+                  "sc-domain:example.com"). Domain properties cover all subdomains — use the
+                  domain property as site_url and filter by page to analyze a specific subdomain.
         urls: List of URLs to check, one per line
     """
     try:
@@ -775,7 +818,9 @@ async def get_performance_overview(site_url: str, days: int = 28) -> str:
     Get a performance overview for a specific property.
     
     Args:
-        site_url: The URL of the site in Search Console (must be exact match)
+        site_url: Exact GSC property URL from list_properties (e.g. "https://example.com/" or
+                  "sc-domain:example.com"). Domain properties cover all subdomains — use the
+                  domain property as site_url and filter by page to analyze a specific subdomain.
         days: Number of days to look back (default: 28)
     """
     try:
@@ -849,6 +894,8 @@ async def get_performance_overview(site_url: str, days: int = 28) -> str:
         
         return "\n".join(result_lines)
     except Exception as e:
+        if "404" in str(e):
+            return _site_not_found_error(site_url)
         return f"Error retrieving performance overview: {str(e)}"
 
 @mcp.tool()
@@ -872,7 +919,9 @@ async def get_advanced_search_analytics(
     Get advanced search analytics data with sorting, filtering, and pagination.
     
     Args:
-        site_url: The URL of the site in Search Console (must be exact match)
+        site_url: Exact GSC property URL from list_properties (e.g. "https://example.com/" or
+                  "sc-domain:example.com"). Domain properties cover all subdomains — use the
+                  domain property as site_url and filter by page to analyze a specific subdomain.
         start_date: Start date in YYYY-MM-DD format (defaults to 28 days ago)
         end_date: End date in YYYY-MM-DD format (defaults to today)
         dimensions: Dimensions to group by, comma-separated (e.g., "query,page,device")
@@ -1026,6 +1075,8 @@ async def get_advanced_search_analytics(
         
         return "\n".join(result_lines)
     except Exception as e:
+        if "404" in str(e):
+            return _site_not_found_error(site_url)
         return f"Error retrieving advanced search analytics: {str(e)}"
 
 @mcp.tool()
@@ -1042,7 +1093,9 @@ async def compare_search_periods(
     Compare search analytics data between two time periods.
     
     Args:
-        site_url: The URL of the site in Search Console (must be exact match)
+        site_url: Exact GSC property URL from list_properties (e.g. "https://example.com/" or
+                  "sc-domain:example.com"). Domain properties cover all subdomains — use the
+                  domain property as site_url and filter by page to analyze a specific subdomain.
         period1_start: Start date for period 1 (YYYY-MM-DD)
         period1_end: End date for period 1 (YYYY-MM-DD)
         period2_start: Start date for period 2 (YYYY-MM-DD)
@@ -1159,6 +1212,8 @@ async def compare_search_periods(
         
         return "\n".join(result_lines)
     except Exception as e:
+        if "404" in str(e):
+            return _site_not_found_error(site_url)
         return f"Error comparing search periods: {str(e)}"
 
 @mcp.tool()
@@ -1172,7 +1227,9 @@ async def get_search_by_page_query(
     Get search analytics data for a specific page, broken down by query.
     
     Args:
-        site_url: The URL of the site in Search Console (must be exact match)
+        site_url: Exact GSC property URL from list_properties (e.g. "https://example.com/" or
+                  "sc-domain:example.com"). Domain properties cover all subdomains — use the
+                  domain property as site_url and filter by page to analyze a specific subdomain.
         page_url: The specific page URL to analyze
         days: Number of days to look back (default: 28)
         row_limit: Number of rows to return (default: 20, max: 500). Use 5-20 for quick overviews,
@@ -1245,7 +1302,9 @@ async def list_sitemaps_enhanced(site_url: str, sitemap_index: str = None) -> st
     List all sitemaps for a specific Search Console property with detailed information.
     
     Args:
-        site_url: The URL of the site in Search Console (must be exact match)
+        site_url: Exact GSC property URL from list_properties (e.g. "https://example.com/" or
+                  "sc-domain:example.com"). Domain properties cover all subdomains — use the
+                  domain property as site_url and filter by page to analyze a specific subdomain.
         sitemap_index: Optional sitemap index URL to list child sitemaps
     """
     try:
@@ -1315,6 +1374,8 @@ async def list_sitemaps_enhanced(site_url: str, sitemap_index: str = None) -> st
         
         return "\n".join(result_lines)
     except Exception as e:
+        if "404" in str(e):
+            return _site_not_found_error(site_url)
         return f"Error retrieving sitemaps: {str(e)}"
 
 @mcp.tool()
@@ -1323,7 +1384,9 @@ async def get_sitemap_details(site_url: str, sitemap_url: str) -> str:
     Get detailed information about a specific sitemap.
     
     Args:
-        site_url: The URL of the site in Search Console (must be exact match)
+        site_url: Exact GSC property URL from list_properties (e.g. "https://example.com/" or
+                  "sc-domain:example.com"). Domain properties cover all subdomains — use the
+                  domain property as site_url and filter by page to analyze a specific subdomain.
         sitemap_url: The full URL of the sitemap to inspect
     """
     try:
@@ -1391,7 +1454,9 @@ async def submit_sitemap(site_url: str, sitemap_url: str) -> str:
     Submit a new sitemap or resubmit an existing one to Google.
     
     Args:
-        site_url: The URL of the site in Search Console (must be exact match)
+        site_url: Exact GSC property URL from list_properties (e.g. "https://example.com/" or
+                  "sc-domain:example.com"). Domain properties cover all subdomains — use the
+                  domain property as site_url and filter by page to analyze a specific subdomain.
         sitemap_url: The full URL of the sitemap to submit
     """
     try:
@@ -1436,7 +1501,9 @@ async def delete_sitemap(site_url: str, sitemap_url: str) -> str:
     Delete (unsubmit) a sitemap from Google Search Console.
     
     Args:
-        site_url: The URL of the site in Search Console (must be exact match)
+        site_url: Exact GSC property URL from list_properties (e.g. "https://example.com/" or
+                  "sc-domain:example.com"). Domain properties cover all subdomains — use the
+                  domain property as site_url and filter by page to analyze a specific subdomain.
         sitemap_url: The full URL of the sitemap to delete
     """
     try:
@@ -1465,7 +1532,9 @@ async def manage_sitemaps(site_url: str, action: str, sitemap_url: str = None, s
     All-in-one tool to manage sitemaps (list, get details, submit, delete).
     
     Args:
-        site_url: The URL of the site in Search Console (must be exact match)
+        site_url: Exact GSC property URL from list_properties (e.g. "https://example.com/" or
+                  "sc-domain:example.com"). Domain properties cover all subdomains — use the
+                  domain property as site_url and filter by page to analyze a specific subdomain.
         action: The action to perform (list, details, submit, delete)
         sitemap_url: The full URL of the sitemap (required for details, submit, delete)
         sitemap_index: Optional sitemap index URL for listing child sitemaps (only used with 'list' action)
