@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/aminforou-mcp-gsc-badge.png)](https://mseep.ai/app/aminforou-mcp-gsc)
+
 # Google Search Console MCP server for SEOs
 
 > **March 2026 (v0.2.1):** Data freshness, flexible row limits, multi-dimension filtering, reauthenticate tool, bug fixes, and multi-client support. See the [Changelog](#changelog) for details.
