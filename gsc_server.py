@@ -39,6 +39,17 @@ TOKEN_FILE = os.path.join(SCRIPT_DIR, "token.json")
 # Environment variable to skip OAuth authentication
 SKIP_OAUTH = os.environ.get("GSC_SKIP_OAUTH", "").lower() in ("true", "1", "yes")
 
+# Data state for search analytics queries.
+# "all"   → includes fresh/unconfirmed data, matches the GSC dashboard (default)
+# "final" → only confirmed data, which lags 2-3 days behind the dashboard
+_raw_data_state = os.environ.get("GSC_DATA_STATE", "all").lower().strip()
+if _raw_data_state not in ("all", "final"):
+    raise ValueError(
+        f"Invalid GSC_DATA_STATE value '{_raw_data_state}'. "
+        "Accepted values are 'all' (default, matches GSC dashboard) or 'final' (2-3 day lag)."
+    )
+DATA_STATE = _raw_data_state
+
 SCOPES = ["https://www.googleapis.com/auth/webmasters"]
 
 def get_gsc_service():
@@ -272,7 +283,7 @@ async def delete_site(site_url: str) -> str:
         return f"Error removing site: {str(e)}"
 
 @mcp.tool()
-async def get_search_analytics(site_url: str, days: int = 28, dimensions: str = "query") -> str:
+async def get_search_analytics(site_url: str, days: int = 28, dimensions: str = "query", row_limit: int = 20) -> str:
     """
     Get search analytics data for a specific property.
     
@@ -281,6 +292,9 @@ async def get_search_analytics(site_url: str, days: int = 28, dimensions: str = 
         days: Number of days to look back (default: 28)
         dimensions: Dimensions to group by (default: query). Options: query, page, device, country, date
                    You can provide multiple dimensions separated by comma (e.g., "query,page")
+        row_limit: Number of rows to return (default: 20, max: 500). Use 5-20 for quick overviews,
+                   50-200 for deeper analysis, up to 500 for comprehensive reports. For bulk exports
+                   beyond 500 rows, use get_advanced_search_analytics which supports pagination.
     """
     try:
         service = get_gsc_service()
@@ -297,7 +311,8 @@ async def get_search_analytics(site_url: str, days: int = 28, dimensions: str = 
             "startDate": start_date.strftime("%Y-%m-%d"),
             "endDate": end_date.strftime("%Y-%m-%d"),
             "dimensions": dimension_list,
-            "rowLimit": 20  # Limit to top 20 results
+            "rowLimit": min(max(1, row_limit), 500),
+            "dataState": DATA_STATE
         }
         
         # Execute request
@@ -775,7 +790,8 @@ async def get_performance_overview(site_url: str, days: int = 28) -> str:
             "startDate": start_date.strftime("%Y-%m-%d"),
             "endDate": end_date.strftime("%Y-%m-%d"),
             "dimensions": [],  # No dimensions for totals
-            "rowLimit": 1
+            "rowLimit": 1,
+            "dataState": DATA_STATE
         }
         
         total_response = service.searchanalytics().query(siteUrl=site_url, body=total_request).execute()
@@ -785,7 +801,8 @@ async def get_performance_overview(site_url: str, days: int = 28) -> str:
             "startDate": start_date.strftime("%Y-%m-%d"),
             "endDate": end_date.strftime("%Y-%m-%d"),
             "dimensions": ["date"],
-            "rowLimit": days
+            "rowLimit": days,
+            "dataState": DATA_STATE
         }
         
         date_response = service.searchanalytics().query(siteUrl=site_url, body=date_request).execute()
@@ -847,7 +864,9 @@ async def get_advanced_search_analytics(
     sort_direction: str = "descending",
     filter_dimension: str = None,
     filter_operator: str = "contains", 
-    filter_expression: str = None
+    filter_expression: str = None,
+    filters: str = None,
+    data_state: str = None
 ) -> str:
     """
     Get advanced search analytics data with sorting, filtering, and pagination.
@@ -862,9 +881,16 @@ async def get_advanced_search_analytics(
         start_row: Starting row for pagination
         sort_by: Metric to sort by (clicks, impressions, ctr, position)
         sort_direction: Sort direction (ascending or descending)
-        filter_dimension: Dimension to filter on (query, page, country, device)
-        filter_operator: Filter operator (contains, equals, notContains, notEquals)
-        filter_expression: Filter expression value
+        filter_dimension: Single filter dimension (query, page, country, device). Use 'filters' instead for multiple filters.
+        filter_operator: Single filter operator (contains, equals, notContains, notEquals)
+        filter_expression: Single filter expression value
+        filters: JSON array of filter objects for AND logic across multiple dimensions. Overrides
+                 filter_dimension/filter_operator/filter_expression when provided. Each object must
+                 have 'dimension', 'operator', and 'expression' keys. Valid dimensions: query, page,
+                 country, device. Valid operators: contains, equals, notContains, notEquals.
+                 Example: [{"dimension":"country","operator":"equals","expression":"usa"},
+                           {"dimension":"device","operator":"equals","expression":"MOBILE"}]
+        data_state: Data freshness — "all" (default, matches GSC dashboard) or "final" (confirmed data only, 2-3 day lag)
     """
     try:
         service = get_gsc_service()
@@ -874,6 +900,14 @@ async def get_advanced_search_analytics(
             end_date = datetime.now().date().strftime("%Y-%m-%d")
         if not start_date:
             start_date = (datetime.now().date() - timedelta(days=28)).strftime("%Y-%m-%d")
+        
+        # Resolve and validate data_state (per-call override or fall back to global setting)
+        resolved_data_state = (data_state or DATA_STATE).lower().strip()
+        if resolved_data_state not in ("all", "final"):
+            return (
+                f"Invalid data_state value '{data_state}'. "
+                "Accepted values are 'all' (matches GSC dashboard) or 'final' (2-3 day lag)."
+            )
         
         # Parse dimensions
         dimension_list = [d.strip() for d in dimensions.split(",")]
@@ -885,7 +919,8 @@ async def get_advanced_search_analytics(
             "dimensions": dimension_list,
             "rowLimit": min(row_limit, 25000),  # Cap at API maximum
             "startRow": start_row,
-            "searchType": search_type.upper()
+            "searchType": search_type.upper(),
+            "dataState": resolved_data_state
         }
         
         # Add sorting
@@ -903,34 +938,60 @@ async def get_advanced_search_analytics(
                     "direction": sort_direction.lower()
                 }]
         
-        # Add filtering if provided
-        if filter_dimension and filter_expression:
-            filter_group = {
-                "filters": [{
-                    "dimension": filter_dimension,
-                    "operator": filter_operator,
-                    "expression": filter_expression
-                }]
+        # Build filter groups — multi-filter JSON takes priority over single-filter params
+        active_filters = []
+        if filters:
+            try:
+                filter_list = json.loads(filters)
+            except json.JSONDecodeError:
+                return "Invalid filters JSON. Please provide a valid JSON array of filter objects."
+            if not isinstance(filter_list, list) or len(filter_list) == 0:
+                return "Invalid filters value. Expected a non-empty JSON array of filter objects."
+            for f in filter_list:
+                if not all(k in f for k in ("dimension", "operator", "expression")):
+                    return (
+                        "Each filter object must have 'dimension', 'operator', and 'expression' keys. "
+                        f"Invalid filter: {f}"
+                    )
+            request["dimensionFilterGroups"] = [{"filters": filter_list}]
+            active_filters = filter_list
+        elif filter_dimension and filter_expression:
+            single_filter = {
+                "dimension": filter_dimension,
+                "operator": filter_operator,
+                "expression": filter_expression
             }
-            request["dimensionFilterGroups"] = [filter_group]
+            request["dimensionFilterGroups"] = [{"filters": [single_filter]}]
+            active_filters = [single_filter]
         
         # Execute request
         response = service.searchanalytics().query(siteUrl=site_url, body=request).execute()
         
         if not response.get("rows"):
-            return (f"No search analytics data found for {site_url} with the specified parameters.\n\n"
-                   f"Parameters used:\n"
-                   f"- Date range: {start_date} to {end_date}\n"
-                   f"- Dimensions: {dimensions}\n"
-                   f"- Search type: {search_type}\n"
-                   f"- Filter: {filter_dimension} {filter_operator} '{filter_expression}'" if filter_dimension else "- No filter applied")
+            no_data_msg = (
+                f"No search analytics data found for {site_url} with the specified parameters.\n\n"
+                f"Parameters used:\n"
+                f"- Date range: {start_date} to {end_date}\n"
+                f"- Dimensions: {dimensions}\n"
+                f"- Search type: {search_type}\n"
+            )
+            if active_filters:
+                no_data_msg += "- Filters:\n"
+                for f in active_filters:
+                    no_data_msg += f"    {f['dimension']} {f['operator']} '{f['expression']}'\n"
+            else:
+                no_data_msg += "- No filter applied\n"
+            return no_data_msg
         
         # Format results
         result_lines = [f"Search analytics for {site_url}:"]
         result_lines.append(f"Date range: {start_date} to {end_date}")
         result_lines.append(f"Search type: {search_type}")
-        if filter_dimension:
-            result_lines.append(f"Filter: {filter_dimension} {filter_operator} '{filter_expression}'")
+        if active_filters:
+            filter_desc = " AND ".join(
+                f"{f['dimension']} {f['operator']} '{f['expression']}'" for f in active_filters
+            )
+            result_lines.append(f"Filters: {filter_desc}")
         result_lines.append(f"Showing rows {start_row+1} to {start_row+len(response.get('rows', []))} (sorted by {sort_by} {sort_direction})")
         result_lines.append("\n" + "-" * 80 + "\n")
         
@@ -1000,14 +1061,16 @@ async def compare_search_periods(
             "startDate": period1_start,
             "endDate": period1_end,
             "dimensions": dimension_list,
-            "rowLimit": 1000  # Get more to ensure we can match items between periods
+            "rowLimit": 1000,  # Get more to ensure we can match items between periods
+            "dataState": DATA_STATE
         }
         
         period2_request = {
             "startDate": period2_start,
             "endDate": period2_end,
             "dimensions": dimension_list,
-            "rowLimit": 1000
+            "rowLimit": 1000,
+            "dataState": DATA_STATE
         }
         
         # Execute requests
@@ -1102,7 +1165,8 @@ async def compare_search_periods(
 async def get_search_by_page_query(
     site_url: str,
     page_url: str,
-    days: int = 28
+    days: int = 28,
+    row_limit: int = 20
 ) -> str:
     """
     Get search analytics data for a specific page, broken down by query.
@@ -1111,6 +1175,9 @@ async def get_search_by_page_query(
         site_url: The URL of the site in Search Console (must be exact match)
         page_url: The specific page URL to analyze
         days: Number of days to look back (default: 28)
+        row_limit: Number of rows to return (default: 20, max: 500). Use 5-20 for quick overviews,
+                   50-200 for deeper analysis, up to 500 for comprehensive reports. For bulk exports
+                   beyond 500 rows, use get_advanced_search_analytics which supports pagination.
     """
     try:
         service = get_gsc_service()
@@ -1131,8 +1198,9 @@ async def get_search_by_page_query(
                     "expression": page_url
                 }]
             }],
-            "rowLimit": 20,  # Top 20 queries for this page
-            "orderBy": [{"metric": "CLICK_COUNT", "direction": "descending"}]
+            "rowLimit": min(max(1, row_limit), 500),
+            "orderBy": [{"metric": "CLICK_COUNT", "direction": "descending"}],
+            "dataState": DATA_STATE
         }
         
         # Execute request

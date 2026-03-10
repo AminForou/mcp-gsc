@@ -1,5 +1,7 @@
 # Google Search Console MCP server for SEOs
 
+> **March 2026 (v0.2.0):** Data now matches the GSC dashboard by default, flexible row limits, and multi-dimension filtering. See the [Changelog](#changelog) for details.
+
 A tool that connects [Google Search Console](https://search.google.com/search-console/about) (GSC) with Claude AI, allowing you to analyze your SEO data through natural language conversations. This integration gives you access to property information, search analytics, URL inspection, and sitemap management—all through simple chat with Claude.
 
 ---
@@ -43,7 +45,7 @@ Here's what you can ask Claude to do once you've set up this integration:
 | `get_site_details`              | Shows details about a specific site                         | Your website URL                                                |
 | `add_site`                      | Adds a new site to your GSC properties                      | Your website URL                                                |
 | `delete_site`                   | Removes a site from your GSC properties                     | Your website URL                                                |
-| `get_search_analytics`          | Shows top queries and pages with metrics                    | Your website URL and time period                                |
+| `get_search_analytics`          | Shows top queries and pages with metrics                    | Your website URL, time period, and optional `row_limit` (default 20, max 500) |
 | `get_performance_overview`      | Gives a summary of site performance                         | Your website URL and time period                                |
 | `check_indexing_issues`         | Checks if pages have indexing problems                      | Your website URL and list of pages to check                     |
 | `inspect_url_enhanced`          | Detailed inspection of a specific URL                       | Your website URL and the page to inspect                        |
@@ -222,7 +224,8 @@ When you see `(.venv)` at the beginning of your command prompt, it means the vir
          "command": "/FULL/PATH/TO/-main/.venv/bin/python",
          "args": ["/FULL/PATH/TO/mcp-gsc-main/gsc_server.py"],
          "env": {
-           "GSC_OAUTH_CLIENT_SECRETS_FILE": "/FULL/PATH/TO/client_secrets.json"
+           "GSC_OAUTH_CLIENT_SECRETS_FILE": "/FULL/PATH/TO/client_secrets.json",
+           "GSC_DATA_STATE": "all"
          }
        }
      }
@@ -239,12 +242,22 @@ When you see `(.venv)` at the beginning of your command prompt, it means the vir
          "args": ["/FULL/PATH/TO/mcp-gsc-main/gsc_server.py"],
          "env": {
            "GSC_CREDENTIALS_PATH": "/FULL/PATH/TO/service_account_credentials.json",
-           "GSC_SKIP_OAUTH": "true"
+           "GSC_SKIP_OAUTH": "true",
+           "GSC_DATA_STATE": "all"
          }
        }
      }
    }
    ```
+
+#### Environment Variables Reference
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `GSC_OAUTH_CLIENT_SECRETS_FILE` | OAuth only | `client_secrets.json` (same folder) | Path to your OAuth client secrets JSON file |
+| `GSC_CREDENTIALS_PATH` | Service account only | `service_account_credentials.json` (same folder) | Path to your service account JSON key file |
+| `GSC_SKIP_OAUTH` | No | `false` | Set to `"true"` to force service account auth and skip OAuth |
+| `GSC_DATA_STATE` | No | `"all"` | `"all"` returns fresh data matching the GSC dashboard. `"final"` returns only confirmed data (2–3 day lag). |
 
    **Important:** Replace all paths with the actual locations on your computer:
    
@@ -290,7 +303,7 @@ Here are some powerful prompts you can use with each tool:
 | `get_sitemap_details`           | "Check the status of my main sitemap at mywebsite.com/sitemap.xml and explain what the warnings mean for my SEO." |
 | `get_search_by_page_query`      | "What search terms are driving traffic to my blog post at mywebsite.com/blog/post-title? Identify opportunities to optimize for related keywords." |
 | `compare_search_periods`        | "Compare my site's performance between January and February. What queries improved the most, which declined, and what might explain these changes?" |
-| `get_advanced_search_analytics` | "Analyze my mobile search performance for queries with high impressions but positions below 10, and suggest content improvements to help them rank better." |
+| `get_advanced_search_analytics` | "Analyze queries with high impressions but positions below 10, filtered to mobile traffic in the US only. Use `filters` with country=usa and device=MOBILE." |
 
 You can also ask Claude to combine multiple tools and analyze the results. For example:
 
@@ -370,6 +383,22 @@ Remember that most issues have been encountered by others before, and there's us
 
 ---
 
+## Related Tools
+
+If you work with Google Search Console regularly, you may also find these tools useful:
+
+**[Advanced GSC Visualizer](https://www.advancedgsc.com/)** — A Chrome extension (14,000+ users) that brings powerful charts, annotations, and one-click API access directly inside Google Search Console. Features include:
+
+- Interactive charts with trendlines, moving averages, and Google algorithm update overlays
+- One-click export of up to 25,000 rows from the GSC API — no coding required
+- Keyword cannibalization detection
+- Crawl stats visualizations
+- AI assistant for querying your GSC data directly in the browser
+
+Built by the same author. [Install from the Chrome Web Store →](https://chromewebstore.google.com/detail/advanced-gsc-visualizer/cdiccpnglfpnclonhpchpaaoigfpieel)
+
+---
+
 ## Contributing
 
 Found a bug or have an idea for improvement? We welcome your input! Open an issue or submit a pull request on GitHub.
@@ -379,3 +408,21 @@ Found a bug or have an idea for improvement? We welcome your input! Open an issu
 ## License
 
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+
+---
+
+## Changelog
+
+### [0.2.0] — March 2026
+
+#### Added
+- **Data freshness:** All search analytics queries now use `dataState: "all"` by default, returning data that matches the GSC dashboard instead of finalized-only data (which lags 2–3 days). Configurable via the `GSC_DATA_STATE` environment variable (`"all"` or `"final"`).
+- **Flexible row limits:** `get_search_analytics` and `get_search_by_page_query` now accept an optional `row_limit` parameter (default 20, max 500). Claude will automatically choose an appropriate value based on your request — use higher values for comprehensive analysis, lower values for quick overviews.
+- **Multi-dimension filtering:** `get_advanced_search_analytics` now accepts a `filters` parameter — a JSON array of filter objects for AND logic across multiple dimensions simultaneously (e.g., country = USA **and** device = mobile). The existing single-filter parameters (`filter_dimension`, `filter_operator`, `filter_expression`) remain fully supported.
+
+### [0.1.0] — Initial release
+
+- 19 tools covering property management, search analytics, URL inspection, and sitemap management
+- OAuth and service account authentication
+- Batch URL inspection (up to 10 URLs)
+- Period comparison tool
