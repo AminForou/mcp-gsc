@@ -1,0 +1,25 @@
+# Smithery configuration file: https://smithery.ai/docs/config#smitheryyaml
+
+startCommand:
+  type: stdio
+  configSchema:
+    # JSON Schema defining the configuration options for the MCP.
+    type: object
+    properties:
+      gscCredentialsPath:
+        type: string
+        description: Absolute path to the Google Service Account credentials JSON file.
+          If not provided, the server will look for
+          service_account_credentials.json in the working directory.
+      port:
+        type: number
+        default: 8000
+        description: Port for the MCP server (currently configuration is not used since
+          the server communicates via stdio)
+  commandFunction:
+    # A JS function that produces the CLI command based on the given config to start the MCP on stdio.
+    |-
+    (config) => { const env = Object.assign({}, process.env); if(config.gscCredentialsPath){ env.GSC_CREDENTIALS_PATH = config.gscCredentialsPath; } return { command: 'python', args: ['gsc_server.py'], env }; }
+  exampleConfig:
+    gscCredentialsPath: /path/to/service_account_credentials.json
+    port: 8000

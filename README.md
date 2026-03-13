@@ -1,4 +1,5 @@
 # Google Search Console MCP server for SEOs
+[![smithery badge](https://smithery.ai/badge/@AminForou/mcp-gsc)](https://smithery.ai/server/@AminForou/mcp-gsc)
 
 > **March 2026 (v0.2.1):** Data freshness, flexible row limits, multi-dimension filtering, reauthenticate tool, bug fixes, and multi-client support. See the [Changelog](#changelog) for details.
 
