@@ -2,6 +2,7 @@ from typing import Any, Dict, List, Optional
 import logging
 import os
 import json
+import sys
 from datetime import datetime, timedelta
 
 import google.auth
@@ -124,14 +125,25 @@ def get_gsc_service_oauth():
         
         # Start new OAuth flow if we don't have valid credentials
         if not creds or not creds.valid:
+            # IMPORTANT: When running as MCP server (stdio), run_local_server() blocks
+            # forever because no browser can open. Only allow interactive OAuth when
+            # running directly from terminal (stdin is a TTY).
+            if not sys.stdin.isatty():
+                raise RuntimeError(
+                    "OAuth token is missing or expired and cannot be refreshed. "
+                    "Run the OAuth flow manually first:\n"
+                    f"  cd {SCRIPT_DIR} && python gsc_server.py\n"
+                    "Then restart Claude Code."
+                )
+
             # Check if client secrets file exists
             if not os.path.exists(OAUTH_CLIENT_SECRETS_FILE):
                 raise FileNotFoundError(
                     f"OAuth client secrets file not found. Please place a client_secrets.json file in the script directory "
                     f"or set the GSC_OAUTH_CLIENT_SECRETS_FILE environment variable."
                 )
-            
-            # Start OAuth flow
+
+            # Start OAuth flow (only when running interactively)
             flow = InstalledAppFlow.from_client_secrets_file(OAUTH_CLIENT_SECRETS_FILE, SCOPES)
             creds = flow.run_local_server(port=0)
             
@@ -1624,6 +1636,16 @@ async def reauthenticate() -> str:
                 "Cannot start new authentication flow. "
                 "Please ensure client_secrets.json is present or set the "
                 "GSC_OAUTH_CLIENT_SECRETS_FILE environment variable."
+            )
+
+        # IMPORTANT: run_local_server() blocks forever when running as MCP subprocess.
+        if not sys.stdin.isatty():
+            msg = "Token deleted. " if token_deleted else ""
+            return (
+                msg + "Cannot open browser for re-authentication from MCP. "
+                "Run manually:\n"
+                f"  cd {SCRIPT_DIR} && .venv/bin/python gsc_server.py\n"
+                "Then restart Claude Code."
             )
 
         # Trigger new OAuth flow — this opens a browser window on the local machine
