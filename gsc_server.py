@@ -1643,6 +1643,1084 @@ async def reauthenticate() -> str:
         return f"Error during reauthentication: {str(e)}"
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# Enhanced Analytics Tools — added 2026-03-30
+# ═══════════════════════════════════════════════════════════════════════
+
+@mcp.tool()
+async def get_top_growing_queries(site_url: str, days: int = 28, row_limit: int = 20, metric: str = "clicks") -> str:
+    """
+    Find queries with the biggest growth comparing recent period vs previous period.
+    Splits the date range in half and compares. Great for spotting trending keywords.
+
+    Args:
+        site_url: Exact GSC property URL from list_properties (e.g. "https://example.com/" or
+                  "sc-domain:example.com"). Domain properties cover all subdomains — use the
+                  domain property as site_url and filter by page to analyze a specific subdomain.
+        days: Total lookback window (split in half for comparison). Default 28.
+        row_limit: Number of top growing queries to return. Default 20.
+        metric: Metric to measure growth by — clicks, impressions, ctr, or position. Default clicks.
+    """
+    try:
+        service = get_gsc_service()
+        half = days // 2
+        end = datetime.now().date()
+        mid = end - timedelta(days=half)
+        start = end - timedelta(days=days)
+
+        body_recent = {
+            "startDate": str(mid),
+            "endDate": str(end),
+            "dimensions": ["query"],
+            "rowLimit": 500,
+            "dataState": DATA_STATE,
+        }
+        body_previous = {
+            "startDate": str(start),
+            "endDate": str(mid - timedelta(days=1)),
+            "dimensions": ["query"],
+            "rowLimit": 500,
+            "dataState": DATA_STATE,
+        }
+
+        recent = service.searchanalytics().query(siteUrl=site_url, body=body_recent).execute()
+        previous = service.searchanalytics().query(siteUrl=site_url, body=body_previous).execute()
+
+        recent_map = {}
+        for row in recent.get("rows", []):
+            q = row["keys"][0]
+            recent_map[q] = row
+
+        prev_map = {}
+        for row in previous.get("rows", []):
+            q = row["keys"][0]
+            prev_map[q] = row
+
+        growth_data = []
+        for q, r in recent_map.items():
+            p = prev_map.get(q)
+            if metric == "position":
+                r_val = r.get("position", 0)
+                p_val = p.get("position", 100) if p else 100
+                change = p_val - r_val  # positive = improved
+            else:
+                r_val = r.get(metric, 0)
+                p_val = p.get(metric, 0) if p else 0
+                change = r_val - p_val
+            growth_data.append({
+                "query": q,
+                "recent": r_val,
+                "previous": p_val,
+                "change": change,
+                "recent_clicks": r.get("clicks", 0),
+                "recent_impressions": r.get("impressions", 0),
+                "recent_ctr": r.get("ctr", 0),
+                "recent_position": r.get("position", 0),
+            })
+
+        growth_data.sort(key=lambda x: x["change"], reverse=True)
+        top = growth_data[:row_limit]
+
+        lines = [f"Top Growing Queries by {metric} for {site_url}"]
+        lines.append(f"Period: {start} to {mid - timedelta(days=1)} vs {mid} to {end}")
+        lines.append("-" * 100)
+        lines.append(f"{'Query':<50} {'Previous':>10} {'Recent':>10} {'Change':>10} {'Clicks':>8} {'Impr':>8} {'Pos':>6}")
+        lines.append("-" * 100)
+        for item in top:
+            q = item["query"][:48]
+            if metric == "ctr":
+                prev_str = f"{item['previous']*100:.1f}%"
+                rec_str = f"{item['recent']*100:.1f}%"
+                chg_str = f"+{item['change']*100:.1f}%" if item["change"] > 0 else f"{item['change']*100:.1f}%"
+            elif metric == "position":
+                prev_str = f"{item['previous']:.1f}"
+                rec_str = f"{item['recent']:.1f}"
+                chg_str = f"+{item['change']:.1f}" if item["change"] > 0 else f"{item['change']:.1f}"
+            else:
+                prev_str = str(int(item["previous"]))
+                rec_str = str(int(item["recent"]))
+                chg_str = f"+{int(item['change'])}" if item["change"] > 0 else str(int(item["change"]))
+            lines.append(f"{q:<50} {prev_str:>10} {rec_str:>10} {chg_str:>10} {int(item['recent_clicks']):>8} {int(item['recent_impressions']):>8} {item['recent_position']:>6.1f}")
+
+        return json.dumps({"result": "\n".join(lines)})
+
+    except HttpError as e:
+        if e.resp.status == 404:
+            return json.dumps({"result": _site_not_found_error(site_url)})
+        return json.dumps({"result": f"HTTP error: {str(e)}"})
+    except Exception as e:
+        return json.dumps({"result": f"Error: {str(e)}"})
+
+
+@mcp.tool()
+async def get_top_declining_queries(site_url: str, days: int = 28, row_limit: int = 20, metric: str = "clicks") -> str:
+    """
+    Find queries with the biggest decline comparing recent period vs previous period.
+    Helps identify keywords losing traction that may need attention.
+
+    Args:
+        site_url: Exact GSC property URL from list_properties (e.g. "https://example.com/" or
+                  "sc-domain:example.com"). Domain properties cover all subdomains — use the
+                  domain property as site_url and filter by page to analyze a specific subdomain.
+        days: Total lookback window (split in half for comparison). Default 28.
+        row_limit: Number of top declining queries to return. Default 20.
+        metric: Metric to measure decline by — clicks, impressions, ctr, or position. Default clicks.
+    """
+    try:
+        service = get_gsc_service()
+        half = days // 2
+        end = datetime.now().date()
+        mid = end - timedelta(days=half)
+        start = end - timedelta(days=days)
+
+        body_recent = {
+            "startDate": str(mid),
+            "endDate": str(end),
+            "dimensions": ["query"],
+            "rowLimit": 500,
+            "dataState": DATA_STATE,
+        }
+        body_previous = {
+            "startDate": str(start),
+            "endDate": str(mid - timedelta(days=1)),
+            "dimensions": ["query"],
+            "rowLimit": 500,
+            "dataState": DATA_STATE,
+        }
+
+        recent = service.searchanalytics().query(siteUrl=site_url, body=body_recent).execute()
+        previous = service.searchanalytics().query(siteUrl=site_url, body=body_previous).execute()
+
+        recent_map = {row["keys"][0]: row for row in recent.get("rows", [])}
+        prev_map = {row["keys"][0]: row for row in previous.get("rows", [])}
+
+        decline_data = []
+        for q, p in prev_map.items():
+            r = recent_map.get(q)
+            if metric == "position":
+                p_val = p.get("position", 0)
+                r_val = r.get("position", 100) if r else 100
+                change = p_val - r_val  # negative = declined
+            else:
+                p_val = p.get(metric, 0)
+                r_val = r.get(metric, 0) if r else 0
+                change = r_val - p_val  # negative = declined
+
+            decline_data.append({
+                "query": q,
+                "recent": r_val,
+                "previous": p_val,
+                "change": change,
+                "prev_clicks": p.get("clicks", 0),
+                "prev_impressions": p.get("impressions", 0),
+            })
+
+        decline_data.sort(key=lambda x: x["change"])
+        top = decline_data[:row_limit]
+
+        lines = [f"Top Declining Queries by {metric} for {site_url}"]
+        lines.append(f"Period: {start} to {mid - timedelta(days=1)} vs {mid} to {end}")
+        lines.append("-" * 90)
+        lines.append(f"{'Query':<50} {'Previous':>10} {'Recent':>10} {'Change':>10}")
+        lines.append("-" * 90)
+        for item in top:
+            q = item["query"][:48]
+            if metric == "ctr":
+                lines.append(f"{q:<50} {item['previous']*100:>9.1f}% {item['recent']*100:>9.1f}% {item['change']*100:>+9.1f}%")
+            elif metric == "position":
+                lines.append(f"{q:<50} {item['previous']:>10.1f} {item['recent']:>10.1f} {item['change']:>+10.1f}")
+            else:
+                lines.append(f"{q:<50} {int(item['previous']):>10} {int(item['recent']):>10} {int(item['change']):>+10}")
+
+        return json.dumps({"result": "\n".join(lines)})
+
+    except HttpError as e:
+        if e.resp.status == 404:
+            return json.dumps({"result": _site_not_found_error(site_url)})
+        return json.dumps({"result": f"HTTP error: {str(e)}"})
+    except Exception as e:
+        return json.dumps({"result": f"Error: {str(e)}"})
+
+
+@mcp.tool()
+async def get_content_opportunities(site_url: str, days: int = 28, min_impressions: int = 50, max_ctr: float = 0.03, row_limit: int = 30) -> str:
+    """
+    Find high-impression, low-CTR queries — content optimization opportunities.
+    These are queries where your pages show up often but rarely get clicked,
+    indicating potential for title/description improvements or content gaps.
+
+    Args:
+        site_url: Exact GSC property URL from list_properties (e.g. "https://example.com/" or
+                  "sc-domain:example.com"). Domain properties cover all subdomains — use the
+                  domain property as site_url and filter by page to analyze a specific subdomain.
+        days: Number of days to look back. Default 28.
+        min_impressions: Minimum impressions threshold. Default 50.
+        max_ctr: Maximum CTR threshold (queries below this are opportunities). Default 0.03 (3%).
+        row_limit: Number of opportunities to return. Default 30.
+    """
+    try:
+        service = get_gsc_service()
+        end = datetime.now().date()
+        start = end - timedelta(days=days)
+
+        body = {
+            "startDate": str(start),
+            "endDate": str(end),
+            "dimensions": ["query", "page"],
+            "rowLimit": 1000,
+            "dataState": DATA_STATE,
+        }
+
+        result = service.searchanalytics().query(siteUrl=site_url, body=body).execute()
+        rows = result.get("rows", [])
+
+        opportunities = []
+        for row in rows:
+            impressions = row.get("impressions", 0)
+            ctr = row.get("ctr", 0)
+            if impressions >= min_impressions and ctr <= max_ctr:
+                opportunities.append({
+                    "query": row["keys"][0],
+                    "page": row["keys"][1],
+                    "clicks": row.get("clicks", 0),
+                    "impressions": impressions,
+                    "ctr": ctr,
+                    "position": row.get("position", 0),
+                    "potential_clicks": int(impressions * 0.05) - row.get("clicks", 0),
+                })
+
+        opportunities.sort(key=lambda x: x["potential_clicks"], reverse=True)
+        top = opportunities[:row_limit]
+
+        lines = [f"Content Opportunities for {site_url} (last {days} days)"]
+        lines.append(f"Filter: impressions >= {min_impressions}, CTR <= {max_ctr*100:.0f}%")
+        lines.append(f"Found {len(opportunities)} opportunities, showing top {len(top)}")
+        lines.append("-" * 120)
+        lines.append(f"{'Query':<40} {'Page':<35} {'Impr':>7} {'Clicks':>7} {'CTR':>7} {'Pos':>6} {'Potential':>10}")
+        lines.append("-" * 120)
+        for item in top:
+            q = item["query"][:38]
+            p = item["page"].replace("https://hjlabs.in", "")[:33]
+            lines.append(f"{q:<40} {p:<35} {item['impressions']:>7} {item['clicks']:>7} {item['ctr']*100:>6.1f}% {item['position']:>6.1f} +{item['potential_clicks']:>8}")
+
+        return json.dumps({"result": "\n".join(lines)})
+
+    except HttpError as e:
+        if e.resp.status == 404:
+            return json.dumps({"result": _site_not_found_error(site_url)})
+        return json.dumps({"result": f"HTTP error: {str(e)}"})
+    except Exception as e:
+        return json.dumps({"result": f"Error: {str(e)}"})
+
+
+@mcp.tool()
+async def get_keyword_cannibalization(site_url: str, days: int = 28, min_impressions: int = 10, row_limit: int = 20) -> str:
+    """
+    Detect keyword cannibalization — queries where multiple pages compete for the same keyword.
+    This hurts SEO when Google can't decide which page to rank.
+
+    Args:
+        site_url: Exact GSC property URL from list_properties (e.g. "https://example.com/" or
+                  "sc-domain:example.com"). Domain properties cover all subdomains — use the
+                  domain property as site_url and filter by page to analyze a specific subdomain.
+        days: Number of days to look back. Default 28.
+        min_impressions: Minimum total impressions for the query. Default 10.
+        row_limit: Number of cannibalized queries to return. Default 20.
+    """
+    try:
+        service = get_gsc_service()
+        end = datetime.now().date()
+        start = end - timedelta(days=days)
+
+        body = {
+            "startDate": str(start),
+            "endDate": str(end),
+            "dimensions": ["query", "page"],
+            "rowLimit": 5000,
+            "dataState": DATA_STATE,
+        }
+
+        result = service.searchanalytics().query(siteUrl=site_url, body=body).execute()
+        rows = result.get("rows", [])
+
+        # Group by query
+        query_pages = {}
+        for row in rows:
+            q = row["keys"][0]
+            page = row["keys"][1]
+            if q not in query_pages:
+                query_pages[q] = []
+            query_pages[q].append({
+                "page": page,
+                "clicks": row.get("clicks", 0),
+                "impressions": row.get("impressions", 0),
+                "ctr": row.get("ctr", 0),
+                "position": row.get("position", 0),
+            })
+
+        # Find queries with multiple pages
+        cannibalized = []
+        for q, pages in query_pages.items():
+            if len(pages) < 2:
+                continue
+            total_impressions = sum(p["impressions"] for p in pages)
+            if total_impressions < min_impressions:
+                continue
+            pages.sort(key=lambda x: x["clicks"], reverse=True)
+            cannibalized.append({
+                "query": q,
+                "page_count": len(pages),
+                "total_impressions": total_impressions,
+                "total_clicks": sum(p["clicks"] for p in pages),
+                "pages": pages[:3],  # top 3 pages
+            })
+
+        cannibalized.sort(key=lambda x: x["total_impressions"], reverse=True)
+        top = cannibalized[:row_limit]
+
+        lines = [f"Keyword Cannibalization Report for {site_url} (last {days} days)"]
+        lines.append(f"Found {len(cannibalized)} queries competing across multiple pages")
+        lines.append("=" * 100)
+        for item in top:
+            lines.append(f"\n🔍 \"{item['query']}\" — {item['page_count']} pages, {item['total_impressions']} impressions, {item['total_clicks']} clicks")
+            for p in item["pages"]:
+                pg = p["page"].replace("https://hjlabs.in", "")[:60]
+                lines.append(f"   {pg:<60} clicks={p['clicks']} impr={p['impressions']} pos={p['position']:.1f}")
+
+        return json.dumps({"result": "\n".join(lines)})
+
+    except HttpError as e:
+        if e.resp.status == 404:
+            return json.dumps({"result": _site_not_found_error(site_url)})
+        return json.dumps({"result": f"HTTP error: {str(e)}"})
+    except Exception as e:
+        return json.dumps({"result": f"Error: {str(e)}"})
+
+
+@mcp.tool()
+async def get_device_breakdown(site_url: str, days: int = 28, page_url: str = None) -> str:
+    """
+    Get performance breakdown by device type (DESKTOP, MOBILE, TABLET).
+    Optionally filter by a specific page URL.
+
+    Args:
+        site_url: Exact GSC property URL from list_properties (e.g. "https://example.com/" or
+                  "sc-domain:example.com"). Domain properties cover all subdomains — use the
+                  domain property as site_url and filter by page to analyze a specific subdomain.
+        days: Number of days to look back. Default 28.
+        page_url: Optional specific page URL to analyze. If omitted, shows site-wide breakdown.
+    """
+    try:
+        service = get_gsc_service()
+        end = datetime.now().date()
+        start = end - timedelta(days=days)
+
+        body = {
+            "startDate": str(start),
+            "endDate": str(end),
+            "dimensions": ["device"],
+            "dataState": DATA_STATE,
+        }
+        if page_url:
+            body["dimensionFilterGroups"] = [{
+                "filters": [{"dimension": "page", "operator": "equals", "expression": page_url}]
+            }]
+
+        result = service.searchanalytics().query(siteUrl=site_url, body=body).execute()
+        rows = result.get("rows", [])
+
+        total_clicks = sum(r.get("clicks", 0) for r in rows)
+        total_impressions = sum(r.get("impressions", 0) for r in rows)
+
+        target = page_url or site_url
+        lines = [f"Device Breakdown for {target} (last {days} days)"]
+        lines.append("-" * 80)
+        lines.append(f"{'Device':<15} {'Clicks':>10} {'%':>7} {'Impressions':>14} {'%':>7} {'CTR':>8} {'Position':>10}")
+        lines.append("-" * 80)
+        for row in sorted(rows, key=lambda x: x.get("clicks", 0), reverse=True):
+            device = row["keys"][0]
+            clicks = row.get("clicks", 0)
+            impressions = row.get("impressions", 0)
+            ctr = row.get("ctr", 0)
+            pos = row.get("position", 0)
+            c_pct = (clicks / total_clicks * 100) if total_clicks else 0
+            i_pct = (impressions / total_impressions * 100) if total_impressions else 0
+            lines.append(f"{device:<15} {clicks:>10} {c_pct:>6.1f}% {impressions:>14} {i_pct:>6.1f}% {ctr*100:>7.2f}% {pos:>10.1f}")
+        lines.append("-" * 80)
+        lines.append(f"{'TOTAL':<15} {total_clicks:>10} {'100%':>7} {total_impressions:>14} {'100%':>7}")
+
+        return json.dumps({"result": "\n".join(lines)})
+
+    except HttpError as e:
+        if e.resp.status == 404:
+            return json.dumps({"result": _site_not_found_error(site_url)})
+        return json.dumps({"result": f"HTTP error: {str(e)}"})
+    except Exception as e:
+        return json.dumps({"result": f"Error: {str(e)}"})
+
+
+@mcp.tool()
+async def get_country_breakdown(site_url: str, days: int = 28, row_limit: int = 20, page_url: str = None) -> str:
+    """
+    Get performance breakdown by country. Optionally filter by a specific page.
+
+    Args:
+        site_url: Exact GSC property URL from list_properties (e.g. "https://example.com/" or
+                  "sc-domain:example.com"). Domain properties cover all subdomains — use the
+                  domain property as site_url and filter by page to analyze a specific subdomain.
+        days: Number of days to look back. Default 28.
+        row_limit: Number of countries to return. Default 20.
+        page_url: Optional specific page URL to filter by.
+    """
+    try:
+        service = get_gsc_service()
+        end = datetime.now().date()
+        start = end - timedelta(days=days)
+
+        body = {
+            "startDate": str(start),
+            "endDate": str(end),
+            "dimensions": ["country"],
+            "rowLimit": row_limit,
+            "dataState": DATA_STATE,
+        }
+        if page_url:
+            body["dimensionFilterGroups"] = [{
+                "filters": [{"dimension": "page", "operator": "equals", "expression": page_url}]
+            }]
+
+        result = service.searchanalytics().query(siteUrl=site_url, body=body).execute()
+        rows = result.get("rows", [])
+
+        total_clicks = sum(r.get("clicks", 0) for r in rows)
+
+        target = page_url or site_url
+        lines = [f"Country Breakdown for {target} (last {days} days)"]
+        lines.append("-" * 80)
+        lines.append(f"{'Country':<10} {'Clicks':>10} {'Share':>8} {'Impressions':>14} {'CTR':>8} {'Position':>10}")
+        lines.append("-" * 80)
+        for row in rows:
+            country = row["keys"][0]
+            clicks = row.get("clicks", 0)
+            impressions = row.get("impressions", 0)
+            ctr = row.get("ctr", 0)
+            pos = row.get("position", 0)
+            share = (clicks / total_clicks * 100) if total_clicks else 0
+            lines.append(f"{country:<10} {clicks:>10} {share:>7.1f}% {impressions:>14} {ctr*100:>7.2f}% {pos:>10.1f}")
+
+        return json.dumps({"result": "\n".join(lines)})
+
+    except HttpError as e:
+        if e.resp.status == 404:
+            return json.dumps({"result": _site_not_found_error(site_url)})
+        return json.dumps({"result": f"HTTP error: {str(e)}"})
+    except Exception as e:
+        return json.dumps({"result": f"Error: {str(e)}"})
+
+
+@mcp.tool()
+async def get_daily_trend(site_url: str, days: int = 28, page_url: str = None, query_filter: str = None) -> str:
+    """
+    Get day-by-day performance trend. Useful for spotting traffic drops/spikes.
+    Optionally filter by page URL or query.
+
+    Args:
+        site_url: Exact GSC property URL from list_properties (e.g. "https://example.com/" or
+                  "sc-domain:example.com"). Domain properties cover all subdomains — use the
+                  domain property as site_url and filter by page to analyze a specific subdomain.
+        days: Number of days to look back. Default 28.
+        page_url: Optional page URL to filter by.
+        query_filter: Optional query string to filter by (contains match).
+    """
+    try:
+        service = get_gsc_service()
+        end = datetime.now().date()
+        start = end - timedelta(days=days)
+
+        body = {
+            "startDate": str(start),
+            "endDate": str(end),
+            "dimensions": ["date"],
+            "rowLimit": days + 5,
+            "dataState": DATA_STATE,
+        }
+
+        filters = []
+        if page_url:
+            filters.append({"dimension": "page", "operator": "equals", "expression": page_url})
+        if query_filter:
+            filters.append({"dimension": "query", "operator": "contains", "expression": query_filter})
+        if filters:
+            body["dimensionFilterGroups"] = [{"filters": filters}]
+
+        result = service.searchanalytics().query(siteUrl=site_url, body=body).execute()
+        rows = result.get("rows", [])
+
+        target = page_url or site_url
+        filter_str = f" (query contains '{query_filter}')" if query_filter else ""
+        lines = [f"Daily Trend for {target}{filter_str}"]
+        lines.append("-" * 70)
+        lines.append(f"{'Date':<12} {'Clicks':>8} {'Impressions':>13} {'CTR':>8} {'Position':>10}")
+        lines.append("-" * 70)
+        total_clicks = 0
+        total_impressions = 0
+        for row in sorted(rows, key=lambda x: x["keys"][0]):
+            date = row["keys"][0]
+            clicks = row.get("clicks", 0)
+            impressions = row.get("impressions", 0)
+            ctr = row.get("ctr", 0)
+            pos = row.get("position", 0)
+            total_clicks += clicks
+            total_impressions += impressions
+            lines.append(f"{date:<12} {clicks:>8} {impressions:>13} {ctr*100:>7.2f}% {pos:>10.1f}")
+        lines.append("-" * 70)
+        avg_ctr = (total_clicks / total_impressions * 100) if total_impressions else 0
+        lines.append(f"{'TOTAL':<12} {total_clicks:>8} {total_impressions:>13} {avg_ctr:>7.2f}%")
+
+        return json.dumps({"result": "\n".join(lines)})
+
+    except HttpError as e:
+        if e.resp.status == 404:
+            return json.dumps({"result": _site_not_found_error(site_url)})
+        return json.dumps({"result": f"HTTP error: {str(e)}"})
+    except Exception as e:
+        return json.dumps({"result": f"Error: {str(e)}"})
+
+
+@mcp.tool()
+async def get_top_pages(site_url: str, days: int = 28, row_limit: int = 25, sort_by: str = "clicks") -> str:
+    """
+    Get top performing pages ranked by clicks, impressions, CTR, or position.
+
+    Args:
+        site_url: Exact GSC property URL from list_properties (e.g. "https://example.com/" or
+                  "sc-domain:example.com"). Domain properties cover all subdomains — use the
+                  domain property as site_url and filter by page to analyze a specific subdomain.
+        days: Number of days to look back. Default 28.
+        row_limit: Number of pages to return. Default 25.
+        sort_by: Metric to sort by — clicks, impressions, ctr, or position. Default clicks.
+    """
+    try:
+        service = get_gsc_service()
+        end = datetime.now().date()
+        start = end - timedelta(days=days)
+
+        body = {
+            "startDate": str(start),
+            "endDate": str(end),
+            "dimensions": ["page"],
+            "rowLimit": row_limit,
+            "dataState": DATA_STATE,
+        }
+
+        result = service.searchanalytics().query(siteUrl=site_url, body=body).execute()
+        rows = result.get("rows", [])
+
+        if sort_by == "position":
+            rows.sort(key=lambda x: x.get("position", 100))
+        elif sort_by == "ctr":
+            rows.sort(key=lambda x: x.get("ctr", 0), reverse=True)
+        elif sort_by == "impressions":
+            rows.sort(key=lambda x: x.get("impressions", 0), reverse=True)
+        else:
+            rows.sort(key=lambda x: x.get("clicks", 0), reverse=True)
+
+        lines = [f"Top Pages for {site_url} (last {days} days, sorted by {sort_by})"]
+        lines.append("-" * 100)
+        lines.append(f"{'#':>3} {'Page':<50} {'Clicks':>8} {'Impressions':>12} {'CTR':>8} {'Position':>10}")
+        lines.append("-" * 100)
+        for i, row in enumerate(rows, 1):
+            page = row["keys"][0].replace("https://hjlabs.in", "")[:48]
+            clicks = row.get("clicks", 0)
+            impressions = row.get("impressions", 0)
+            ctr = row.get("ctr", 0)
+            pos = row.get("position", 0)
+            lines.append(f"{i:>3} {page:<50} {clicks:>8} {impressions:>12} {ctr*100:>7.2f}% {pos:>10.1f}")
+
+        return json.dumps({"result": "\n".join(lines)})
+
+    except HttpError as e:
+        if e.resp.status == 404:
+            return json.dumps({"result": _site_not_found_error(site_url)})
+        return json.dumps({"result": f"HTTP error: {str(e)}"})
+    except Exception as e:
+        return json.dumps({"result": f"Error: {str(e)}"})
+
+
+@mcp.tool()
+async def get_page_query_matrix(site_url: str, days: int = 28, min_clicks: int = 0, row_limit: int = 100) -> str:
+    """
+    Get a comprehensive matrix showing which queries drive traffic to which pages.
+    Useful for understanding page-query relationships and content strategy.
+
+    Args:
+        site_url: Exact GSC property URL from list_properties (e.g. "https://example.com/" or
+                  "sc-domain:example.com"). Domain properties cover all subdomains — use the
+                  domain property as site_url and filter by page to analyze a specific subdomain.
+        days: Number of days to look back. Default 28.
+        min_clicks: Minimum clicks threshold. Default 0.
+        row_limit: Number of query-page pairs to return. Default 100.
+    """
+    try:
+        service = get_gsc_service()
+        end = datetime.now().date()
+        start = end - timedelta(days=days)
+
+        body = {
+            "startDate": str(start),
+            "endDate": str(end),
+            "dimensions": ["page", "query"],
+            "rowLimit": row_limit,
+            "dataState": DATA_STATE,
+        }
+
+        result = service.searchanalytics().query(siteUrl=site_url, body=body).execute()
+        rows = result.get("rows", [])
+
+        # Group by page
+        page_queries = {}
+        for row in rows:
+            page = row["keys"][0]
+            query = row["keys"][1]
+            clicks = row.get("clicks", 0)
+            if clicks < min_clicks:
+                continue
+            if page not in page_queries:
+                page_queries[page] = {"total_clicks": 0, "total_impressions": 0, "queries": []}
+            page_queries[page]["total_clicks"] += clicks
+            page_queries[page]["total_impressions"] += row.get("impressions", 0)
+            page_queries[page]["queries"].append({
+                "query": query,
+                "clicks": clicks,
+                "impressions": row.get("impressions", 0),
+                "ctr": row.get("ctr", 0),
+                "position": row.get("position", 0),
+            })
+
+        # Sort pages by total clicks
+        sorted_pages = sorted(page_queries.items(), key=lambda x: x[1]["total_clicks"], reverse=True)
+
+        lines = [f"Page-Query Matrix for {site_url} (last {days} days)"]
+        lines.append("=" * 100)
+        for page, data in sorted_pages:
+            short_page = page.replace("https://hjlabs.in", "")[:70]
+            lines.append(f"\n📄 {short_page}")
+            lines.append(f"   Total: {data['total_clicks']} clicks, {data['total_impressions']} impressions")
+            for q in sorted(data["queries"], key=lambda x: x["clicks"], reverse=True)[:10]:
+                lines.append(f"   {'→'} {q['query'][:50]:<50} clicks={q['clicks']} impr={q['impressions']} pos={q['position']:.1f}")
+
+        return json.dumps({"result": "\n".join(lines)})
+
+    except HttpError as e:
+        if e.resp.status == 404:
+            return json.dumps({"result": _site_not_found_error(site_url)})
+        return json.dumps({"result": f"HTTP error: {str(e)}"})
+    except Exception as e:
+        return json.dumps({"result": f"Error: {str(e)}"})
+
+
+@mcp.tool()
+async def get_seo_health_report(site_url: str, days: int = 28) -> str:
+    """
+    Generate a comprehensive SEO health report combining performance data,
+    indexing status of key pages, and actionable recommendations.
+
+    Args:
+        site_url: Exact GSC property URL from list_properties (e.g. "https://example.com/" or
+                  "sc-domain:example.com"). Domain properties cover all subdomains — use the
+                  domain property as site_url and filter by page to analyze a specific subdomain.
+        days: Number of days to look back. Default 28.
+    """
+    try:
+        service = get_gsc_service()
+        end = datetime.now().date()
+        start = end - timedelta(days=days)
+        half = days // 2
+        mid = end - timedelta(days=half)
+
+        # 1. Overall performance
+        body_total = {
+            "startDate": str(start),
+            "endDate": str(end),
+            "dataState": DATA_STATE,
+        }
+        total = service.searchanalytics().query(siteUrl=site_url, body=body_total).execute()
+        t_rows = total.get("rows", [{}])
+        t = t_rows[0] if t_rows else {}
+
+        # 2. Recent vs previous
+        body_recent = {"startDate": str(mid), "endDate": str(end), "dataState": DATA_STATE}
+        body_prev = {"startDate": str(start), "endDate": str(mid - timedelta(days=1)), "dataState": DATA_STATE}
+        recent = service.searchanalytics().query(siteUrl=site_url, body=body_recent).execute()
+        prev = service.searchanalytics().query(siteUrl=site_url, body=body_prev).execute()
+        r = recent.get("rows", [{}])[0] if recent.get("rows") else {}
+        p = prev.get("rows", [{}])[0] if prev.get("rows") else {}
+
+        # 3. Top pages
+        body_pages = {
+            "startDate": str(start), "endDate": str(end),
+            "dimensions": ["page"], "rowLimit": 10, "dataState": DATA_STATE,
+        }
+        pages_result = service.searchanalytics().query(siteUrl=site_url, body=body_pages).execute()
+
+        # 4. Device breakdown
+        body_device = {
+            "startDate": str(start), "endDate": str(end),
+            "dimensions": ["device"], "dataState": DATA_STATE,
+        }
+        device_result = service.searchanalytics().query(siteUrl=site_url, body=body_device).execute()
+
+        # 5. Sitemaps status
+        sitemaps = service.sitemaps().list(siteUrl=site_url).execute()
+
+        lines = ["=" * 80]
+        lines.append(f"  SEO HEALTH REPORT — {site_url}")
+        lines.append(f"  Period: {start} to {end} ({days} days)")
+        lines.append("=" * 80)
+
+        # Performance summary
+        lines.append(f"\n📊 PERFORMANCE SUMMARY")
+        lines.append(f"   Clicks:      {t.get('clicks', 0):>8}")
+        lines.append(f"   Impressions: {t.get('impressions', 0):>8}")
+        lines.append(f"   Avg CTR:     {t.get('ctr', 0)*100:>7.2f}%")
+        lines.append(f"   Avg Position:{t.get('position', 0):>8.1f}")
+
+        # Trend
+        lines.append(f"\n📈 TREND (recent {half}d vs previous {half}d)")
+        for metric in ["clicks", "impressions"]:
+            rv = r.get(metric, 0)
+            pv = p.get(metric, 0)
+            change = rv - pv
+            pct = (change / pv * 100) if pv else 0
+            arrow = "↑" if change > 0 else "↓" if change < 0 else "→"
+            lines.append(f"   {metric.capitalize():<14} {pv:>8} → {rv:>8}  {arrow} {pct:+.1f}%")
+
+        # Device breakdown
+        lines.append(f"\n📱 DEVICE BREAKDOWN")
+        for row in device_result.get("rows", []):
+            d = row["keys"][0]
+            lines.append(f"   {d:<10} {row.get('clicks', 0):>6} clicks, {row.get('impressions', 0):>8} impr, CTR {row.get('ctr', 0)*100:.1f}%")
+
+        # Top pages
+        lines.append(f"\n📄 TOP PAGES")
+        for i, row in enumerate(pages_result.get("rows", [])[:10], 1):
+            pg = row["keys"][0].replace("https://", "")[:55]
+            lines.append(f"   {i:>2}. {pg:<55} {row.get('clicks', 0):>5} clicks, pos {row.get('position', 0):.1f}")
+
+        # Sitemaps
+        lines.append(f"\n🗺️  SITEMAPS")
+        for sm in sitemaps.get("sitemap", []):
+            path = sm.get("path", "?")
+            urls = sm.get("contents", [{}])[0].get("submitted", "?") if sm.get("contents") else "?"
+            lines.append(f"   {path} — {urls} URLs")
+
+        # Recommendations
+        lines.append(f"\n💡 RECOMMENDATIONS")
+        avg_ctr = t.get("ctr", 0)
+        avg_pos = t.get("position", 0)
+        if avg_ctr < 0.02:
+            lines.append("   ⚠ Low CTR (<2%). Improve title tags and meta descriptions.")
+        if avg_pos > 20:
+            lines.append("   ⚠ High avg position (>20). Focus on content quality and backlinks.")
+        r_clicks = r.get("clicks", 0)
+        p_clicks = p.get("clicks", 0)
+        if r_clicks < p_clicks * 0.8:
+            lines.append("   ⚠ Clicks dropped >20% recently. Check for algorithm updates or technical issues.")
+        lines.append("   ℹ Run get_content_opportunities to find quick-win keywords.")
+        lines.append("   ℹ Run get_keyword_cannibalization to find competing pages.")
+
+        lines.append("\n" + "=" * 80)
+        return json.dumps({"result": "\n".join(lines)})
+
+    except HttpError as e:
+        if e.resp.status == 404:
+            return json.dumps({"result": _site_not_found_error(site_url)})
+        return json.dumps({"result": f"HTTP error: {str(e)}"})
+    except Exception as e:
+        return json.dumps({"result": f"Error: {str(e)}"})
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Additional Analytics Tools — added 2026-03-30
+# ═══════════════════════════════════════════════════════════════════════
+
+@mcp.tool()
+async def get_position_distribution(site_url: str, days: int = 28, page_url: str = None) -> str:
+    """
+    Analyze ranking position distribution — how many queries rank in positions 1-3, 4-10, 11-20, 21-50, 50+.
+    Helps understand overall ranking health and identify improvement buckets.
+
+    Args:
+        site_url: Exact GSC property URL from list_properties (e.g. "https://example.com/" or
+                  "sc-domain:example.com"). Domain properties cover all subdomains — use the
+                  domain property as site_url and filter by page to analyze a specific subdomain.
+        days: Number of days to look back. Default 28.
+        page_url: Optional page URL to filter by.
+    """
+    try:
+        service = get_gsc_service()
+        end = datetime.now().date()
+        start = end - timedelta(days=days)
+
+        body = {
+            "startDate": str(start),
+            "endDate": str(end),
+            "dimensions": ["query"],
+            "rowLimit": 5000,
+            "dataState": DATA_STATE,
+        }
+        if page_url:
+            body["dimensionFilterGroups"] = [{
+                "filters": [{"dimension": "page", "operator": "equals", "expression": page_url}]
+            }]
+
+        result = service.searchanalytics().query(siteUrl=site_url, body=body).execute()
+        rows = result.get("rows", [])
+
+        buckets = {"1-3": [], "4-10": [], "11-20": [], "21-50": [], "50+": []}
+        for row in rows:
+            pos = row.get("position", 100)
+            q = row["keys"][0]
+            entry = {"query": q, "position": pos, "clicks": row.get("clicks", 0), "impressions": row.get("impressions", 0)}
+            if pos <= 3: buckets["1-3"].append(entry)
+            elif pos <= 10: buckets["4-10"].append(entry)
+            elif pos <= 20: buckets["11-20"].append(entry)
+            elif pos <= 50: buckets["21-50"].append(entry)
+            else: buckets["50+"].append(entry)
+
+        target = page_url or site_url
+        lines = [f"Position Distribution for {target} (last {days} days)"]
+        lines.append("=" * 80)
+        total = len(rows)
+        for bucket_name, items in buckets.items():
+            count = len(items)
+            pct = (count / total * 100) if total else 0
+            total_clicks = sum(i["clicks"] for i in items)
+            total_impr = sum(i["impressions"] for i in items)
+            bar = "#" * int(pct / 2)
+            lines.append(f"\n  Position {bucket_name:<6} | {count:>4} queries ({pct:>5.1f}%) | {total_clicks:>5} clicks | {total_impr:>7} impr")
+            lines.append(f"  {bar}")
+            # Show top queries in this bucket
+            top_items = sorted(items, key=lambda x: x["impressions"], reverse=True)[:3]
+            for item in top_items:
+                lines.append(f"    → {item['query'][:45]:<45} pos {item['position']:.1f}  impr={item['impressions']}")
+
+        lines.append(f"\nTotal queries: {total}")
+        return json.dumps({"result": "\n".join(lines)})
+
+    except HttpError as e:
+        if e.resp.status == 404:
+            return json.dumps({"result": _site_not_found_error(site_url)})
+        return json.dumps({"result": f"HTTP error: {str(e)}"})
+    except Exception as e:
+        return json.dumps({"result": f"Error: {str(e)}"})
+
+
+@mcp.tool()
+async def get_zero_click_queries(site_url: str, days: int = 28, min_impressions: int = 5, row_limit: int = 30) -> str:
+    """
+    Find queries with impressions but ZERO clicks. These represent wasted visibility
+    and potential for title/meta description optimization.
+
+    Args:
+        site_url: Exact GSC property URL from list_properties (e.g. "https://example.com/" or
+                  "sc-domain:example.com"). Domain properties cover all subdomains — use the
+                  domain property as site_url and filter by page to analyze a specific subdomain.
+        days: Number of days to look back. Default 28.
+        min_impressions: Minimum impressions to include. Default 5.
+        row_limit: Max results. Default 30.
+    """
+    try:
+        service = get_gsc_service()
+        end = datetime.now().date()
+        start = end - timedelta(days=days)
+
+        body = {
+            "startDate": str(start),
+            "endDate": str(end),
+            "dimensions": ["query", "page"],
+            "rowLimit": 2000,
+            "dataState": DATA_STATE,
+        }
+
+        result = service.searchanalytics().query(siteUrl=site_url, body=body).execute()
+        rows = result.get("rows", [])
+
+        zero_clicks = []
+        for row in rows:
+            if row.get("clicks", 0) == 0 and row.get("impressions", 0) >= min_impressions:
+                zero_clicks.append({
+                    "query": row["keys"][0],
+                    "page": row["keys"][1],
+                    "impressions": row.get("impressions", 0),
+                    "position": row.get("position", 0),
+                })
+
+        zero_clicks.sort(key=lambda x: x["impressions"], reverse=True)
+        top = zero_clicks[:row_limit]
+
+        lines = [f"Zero-Click Queries for {site_url} (last {days} days, min {min_impressions} impressions)"]
+        lines.append(f"Found {len(zero_clicks)} zero-click query-page pairs")
+        lines.append("-" * 110)
+        lines.append(f"{'Query':<40} {'Page':<40} {'Impressions':>12} {'Position':>10}")
+        lines.append("-" * 110)
+        for item in top:
+            q = item["query"][:38]
+            p = item["page"].replace("https://hjlabs.in", "")[:38]
+            lines.append(f"{q:<40} {p:<40} {item['impressions']:>12} {item['position']:>10.1f}")
+
+        total_wasted = sum(i["impressions"] for i in zero_clicks)
+        lines.append(f"\nTotal wasted impressions: {total_wasted}")
+        lines.append("Tip: Improve title tags and meta descriptions for high-impression queries with position < 10.")
+        return json.dumps({"result": "\n".join(lines)})
+
+    except HttpError as e:
+        if e.resp.status == 404:
+            return json.dumps({"result": _site_not_found_error(site_url)})
+        return json.dumps({"result": f"HTTP error: {str(e)}"})
+    except Exception as e:
+        return json.dumps({"result": f"Error: {str(e)}"})
+
+
+@mcp.tool()
+async def get_query_clusters(site_url: str, days: int = 28, min_impressions: int = 3) -> str:
+    """
+    Group related search queries into semantic clusters based on shared words.
+    Helps identify topic areas and content strategy opportunities.
+
+    Args:
+        site_url: Exact GSC property URL from list_properties (e.g. "https://example.com/" or
+                  "sc-domain:example.com"). Domain properties cover all subdomains — use the
+                  domain property as site_url and filter by page to analyze a specific subdomain.
+        days: Number of days to look back. Default 28.
+        min_impressions: Minimum impressions per query. Default 3.
+    """
+    try:
+        service = get_gsc_service()
+        end = datetime.now().date()
+        start = end - timedelta(days=days)
+
+        body = {
+            "startDate": str(start),
+            "endDate": str(end),
+            "dimensions": ["query"],
+            "rowLimit": 500,
+            "dataState": DATA_STATE,
+        }
+
+        result = service.searchanalytics().query(siteUrl=site_url, body=body).execute()
+        rows = result.get("rows", [])
+
+        # Filter by min impressions
+        queries = []
+        for row in rows:
+            if row.get("impressions", 0) >= min_impressions:
+                queries.append({
+                    "query": row["keys"][0],
+                    "clicks": row.get("clicks", 0),
+                    "impressions": row.get("impressions", 0),
+                    "position": row.get("position", 0),
+                })
+
+        # Build keyword clusters by key terms
+        stop_words = {"the", "a", "an", "in", "for", "of", "and", "to", "with", "is", "on", "by", "from"}
+        clusters = {}
+        for q_data in queries:
+            words = [w.lower() for w in q_data["query"].split() if len(w) > 2 and w.lower() not in stop_words]
+            for word in words:
+                if word not in clusters:
+                    clusters[word] = {"queries": [], "total_clicks": 0, "total_impressions": 0}
+                clusters[word]["queries"].append(q_data)
+                clusters[word]["total_clicks"] += q_data["clicks"]
+                clusters[word]["total_impressions"] += q_data["impressions"]
+
+        # Sort clusters by total impressions, filter out single-query clusters
+        sorted_clusters = sorted(
+            [(k, v) for k, v in clusters.items() if len(v["queries"]) >= 2],
+            key=lambda x: x[1]["total_impressions"],
+            reverse=True
+        )
+
+        lines = [f"Query Clusters for {site_url} (last {days} days)"]
+        lines.append(f"Grouped {len(queries)} queries into {len(sorted_clusters)} topic clusters")
+        lines.append("=" * 90)
+        for keyword, data in sorted_clusters[:15]:
+            lines.append(f"\n📌 \"{keyword}\" — {len(data['queries'])} queries, {data['total_impressions']} impr, {data['total_clicks']} clicks")
+            for q in sorted(data["queries"], key=lambda x: x["impressions"], reverse=True)[:5]:
+                lines.append(f"   → {q['query'][:50]:<50} impr={q['impressions']:>5} pos={q['position']:.1f}")
+
+        return json.dumps({"result": "\n".join(lines)})
+
+    except HttpError as e:
+        if e.resp.status == 404:
+            return json.dumps({"result": _site_not_found_error(site_url)})
+        return json.dumps({"result": f"HTTP error: {str(e)}"})
+    except Exception as e:
+        return json.dumps({"result": f"Error: {str(e)}"})
+
+
+@mcp.tool()
+async def get_search_appearance(site_url: str, days: int = 28) -> str:
+    """
+    Get performance breakdown by search appearance type (web results, rich results,
+    AMP, etc.). Shows how different SERP features perform for your site.
+
+    Args:
+        site_url: Exact GSC property URL from list_properties (e.g. "https://example.com/" or
+                  "sc-domain:example.com"). Domain properties cover all subdomains — use the
+                  domain property as site_url and filter by page to analyze a specific subdomain.
+        days: Number of days to look back. Default 28.
+    """
+    try:
+        service = get_gsc_service()
+        end = datetime.now().date()
+        start = end - timedelta(days=days)
+
+        # Query for different search types
+        search_types = ["WEB", "IMAGE", "VIDEO", "NEWS", "DISCOVER"]
+        lines = [f"Search Appearance Report for {site_url} (last {days} days)"]
+        lines.append("-" * 70)
+        lines.append(f"{'Search Type':<15} {'Clicks':>10} {'Impressions':>14} {'CTR':>8} {'Avg Pos':>10}")
+        lines.append("-" * 70)
+
+        total_clicks = 0
+        total_impressions = 0
+        for st in search_types:
+            try:
+                body = {
+                    "startDate": str(start),
+                    "endDate": str(end),
+                    "searchType": st,
+                    "dataState": DATA_STATE,
+                }
+                result = service.searchanalytics().query(siteUrl=site_url, body=body).execute()
+                rows = result.get("rows", [])
+                if rows:
+                    r = rows[0]
+                    clicks = r.get("clicks", 0)
+                    impressions = r.get("impressions", 0)
+                    ctr = r.get("ctr", 0)
+                    pos = r.get("position", 0)
+                    total_clicks += clicks
+                    total_impressions += impressions
+                    lines.append(f"{st:<15} {clicks:>10} {impressions:>14} {ctr*100:>7.2f}% {pos:>10.1f}")
+                else:
+                    lines.append(f"{st:<15} {'0':>10} {'0':>14} {'0.00%':>8} {'N/A':>10}")
+            except Exception:
+                lines.append(f"{st:<15} {'—':>10} {'—':>14} {'—':>8} {'—':>10}")
+
+        lines.append("-" * 70)
+        lines.append(f"{'TOTAL':<15} {total_clicks:>10} {total_impressions:>14}")
+        return json.dumps({"result": "\n".join(lines)})
+
+    except HttpError as e:
+        if e.resp.status == 404:
+            return json.dumps({"result": _site_not_found_error(site_url)})
+        return json.dumps({"result": f"HTTP error: {str(e)}"})
+    except Exception as e:
+        return json.dumps({"result": f"Error: {str(e)}"})
+
+
 if __name__ == "__main__":
     # Start the MCP server on stdio transport
     mcp.run(transport="stdio")
