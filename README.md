@@ -252,6 +252,45 @@ The configuration below uses Claude Desktop as an example. For other clients (Cu
    }
    ```
 
+#### uvx / pipx (no clone needed)
+
+   If you have [uv](https://docs.astral.sh/uv/) or pipx installed, you can run the server directly without cloning the repo:
+
+   ```json
+   {
+     "mcpServers": {
+       "gscServer": {
+         "command": "uvx",
+         "args": ["mcp-gsc"],
+         "env": {
+           "GSC_CREDENTIALS_PATH": "/FULL/PATH/TO/service_account_credentials.json",
+           "GSC_SKIP_OAUTH": "true",
+           "GSC_DATA_STATE": "all"
+         }
+       }
+     }
+   }
+   ```
+
+   For OAuth authentication with uvx:
+
+   ```json
+   {
+     "mcpServers": {
+       "gscServer": {
+         "command": "uvx",
+         "args": ["mcp-gsc"],
+         "env": {
+           "GSC_OAUTH_CLIENT_SECRETS_FILE": "/FULL/PATH/TO/client_secrets.json",
+           "GSC_DATA_STATE": "all"
+         }
+       }
+     }
+   }
+   ```
+
+   uvx automatically downloads and runs the latest published version of `mcp-gsc` from PyPI in an isolated environment. No manual install, venv creation, or path configuration needed.
+
 #### Environment Variables Reference
 
 | Variable | Required | Default | Description |
