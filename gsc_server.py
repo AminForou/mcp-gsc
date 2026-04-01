@@ -1643,6 +1643,10 @@ async def reauthenticate() -> str:
         return f"Error during reauthentication: {str(e)}"
 
 
-if __name__ == "__main__":
-    # Start the MCP server on stdio transport
+def main():
+    """Entry point for uvx / pipx / pip install execution."""
     mcp.run(transport="stdio")
+
+
+if __name__ == "__main__":
+    main()
