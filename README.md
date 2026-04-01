@@ -1,6 +1,6 @@
 # Google Search Console MCP server for SEOs
 
-> **March 2026 (v0.2.1):** Data freshness, flexible row limits, multi-dimension filtering, reauthenticate tool, bug fixes, and multi-client support. See the [Changelog](#changelog) for details.
+> **April 2026 (v0.2.2):** Safety mode for destructive tools, HTTP/SSE transport, official Dockerfile, sitemap warning fix, and PyPI fix. See the [Changelog](#changelog) for details.
 
 A Model Context Protocol (MCP) server that connects [Google Search Console](https://search.google.com/search-console/about) (GSC) to AI assistants, allowing you to analyze your SEO data through natural language conversations. Works with **Claude**, **Cursor**, **Codex**, **Gemini CLI**, **Antigravity**, and any other MCP-compatible client. This integration gives you access to property information, search analytics, URL inspection, and sitemap management—all through simple chat.
 
@@ -385,6 +385,73 @@ Remember that most issues have been encountered by others before, and there's us
 
 ---
 
+## Safety: Destructive Operations
+
+By default, the tools that can **permanently modify your GSC account** (`add_site`, `delete_site`, `delete_sitemap`) are disabled. If you ask the AI to "clean things up" or "remove old properties", it will explain the safety restriction instead of deleting data.
+
+To enable these tools, set the `GSC_ALLOW_DESTRUCTIVE` environment variable:
+
+```bash
+# In your MCP client config (Claude Desktop, Cursor, etc.)
+GSC_ALLOW_DESTRUCTIVE=true
+```
+
+If you never use add/delete operations, you don't need to do anything — your existing setup works exactly as before.
+
+---
+
+## Remote Deployment & Docker (Advanced)
+
+The standard setup above runs the server locally on your machine. This section is **only for users who want to run it on a remote server, in a container, or share it with a team** — existing local users don't need any of this.
+
+### HTTP Transport
+
+By default the server communicates over stdio (standard input/output), which only works locally. To run it as a network server, set the `MCP_TRANSPORT` environment variable:
+
+```bash
+MCP_TRANSPORT=sse MCP_HOST=0.0.0.0 MCP_PORT=3001 python gsc_server.py
+```
+
+Your MCP client then connects to `http://your-server:3001/sse` instead of launching the process locally.
+
+| Variable | Default | Description |
+|---|---|---|
+| `MCP_TRANSPORT` | `stdio` | Set to `sse` for network/remote use |
+| `MCP_HOST` | `127.0.0.1` | Host to bind (use `0.0.0.0` for all interfaces) |
+| `MCP_PORT` | `3001` | Port to bind |
+
+### Docker
+
+A `Dockerfile` is included in the repo. Build and run:
+
+```bash
+# Build the image
+docker build -t mcp-gsc .
+
+# Run locally (stdio mode — for testing)
+docker run -v /path/to/client_secrets.json:/app/client_secrets.json mcp-gsc
+
+# Run as a network server (SSE mode — for remote use)
+docker run \
+  -e MCP_TRANSPORT=sse \
+  -e MCP_HOST=0.0.0.0 \
+  -e MCP_PORT=3001 \
+  -e GSC_CREDENTIALS_PATH=/app/credentials.json \
+  -v /path/to/credentials.json:/app/credentials.json \
+  -p 3001:3001 \
+  mcp-gsc
+```
+
+### Cloud Platforms
+
+The Docker image works on any container platform. Set `MCP_TRANSPORT=sse`, `MCP_HOST=0.0.0.0`, and inject credentials via environment variables or mounted secrets:
+
+- **Railway** — connect your repo, set env vars in the dashboard
+- **Render** — deploy as a Web Service, set env vars under Environment
+- **Fly.io** — `fly deploy`, set secrets with `fly secrets set`
+
+---
+
 ## Related Tools
 
 If you work with Google Search Console regularly, you may also find these tools useful:
@@ -414,6 +481,22 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
 ---
 
 ## Changelog
+
+### [0.2.2] — April 2026
+
+#### Added
+- **Safety mode for destructive tools:** `add_site`, `delete_site`, and `delete_sitemap` are now disabled by default. Set `GSC_ALLOW_DESTRUCTIVE=true` to enable them. This prevents accidental deletion of GSC properties through vague AI instructions.
+- **HTTP/SSE transport:** Set `MCP_TRANSPORT=sse` (plus `MCP_HOST` and `MCP_PORT`) to run the server as a network service instead of a local process. Enables Docker, cloud, and team deployments.
+- **Dockerfile:** Official container image using the `uv` base image. Includes `.dockerignore` to prevent credential files from being baked into images.
+- **CLAUDE.md:** Project context file for AI coding assistants — covers auth, env vars, and how to add new tools.
+
+#### Fixed
+- **Sitemap warning status:** `get_sitemaps` now correctly shows "Has warnings" when a sitemap has warnings but no errors. Previously, warnings were silently ignored in the status field. (Thanks [@nloadholtes](https://github.com/nloadholtes)!)
+
+#### Improved
+- **PyPI package:** `pyproject.toml` now correctly declares `gsc_server.py` as the installable module. `pip install mcp-gsc` and `uvx mcp-gsc` now produce a working installation. (Thanks [@jjeejj](https://github.com/jjeejj)!)
+
+---
 
 ### [0.2.0] — March 2026
 

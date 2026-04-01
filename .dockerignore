@@ -1,0 +1,16 @@
+# Credential files — never bake secrets into the image
+token.json
+client_secrets.json
+service_account_credentials.json
+
+# Internal planning files
+FORK_ANALYSIS.md
+MCP_LEARNINGS.md
+fork-review.html
+
+# Python cache
+*.pyc
+__pycache__/
+*.egg-info/
+dist/
+.venv/

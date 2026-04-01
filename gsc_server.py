@@ -45,6 +45,10 @@ TOKEN_FILE = os.path.join(SCRIPT_DIR, "token.json")
 # Environment variable to skip OAuth authentication
 SKIP_OAUTH = os.environ.get("GSC_SKIP_OAUTH", "").lower() in ("true", "1", "yes")
 
+# Safety flag for destructive operations (add_site, delete_site, delete_sitemap).
+# Default is false — set GSC_ALLOW_DESTRUCTIVE=true to enable these tools.
+ALLOW_DESTRUCTIVE = os.environ.get("GSC_ALLOW_DESTRUCTIVE", "false").lower() in ("true", "1", "yes")
+
 # Data state for search analytics queries.
 # "all"   → includes fresh/unconfirmed data, matches the GSC dashboard (default)
 # "final" → only confirmed data, which lags 2-3 days behind the dashboard
@@ -216,6 +220,11 @@ async def add_site(site_url: str) -> str:
     Args:
         site_url: The URL of the site to add (must be exact match e.g. https://example.com, or https://www.example.com, or https://subdomain.example.com/path/, for domain properties use format: sc-domain:example.com)
     """
+    if not ALLOW_DESTRUCTIVE:
+        return (
+            "Safety: add_site is a destructive operation that modifies your GSC account. "
+            "Set GSC_ALLOW_DESTRUCTIVE=true in your environment to enable add/delete tools."
+        )
     try:
         service = get_gsc_service()
         
@@ -272,6 +281,11 @@ async def delete_site(site_url: str) -> str:
     Args:
         site_url: The URL of the site to remove (must be exact match e.g. https://example.com, or https://www.example.com, or https://subdomain.example.com/path/, for domain properties use format: sc-domain:example.com)
     """
+    if not ALLOW_DESTRUCTIVE:
+        return (
+            "Safety: delete_site permanently removes a property from your GSC account. "
+            "Set GSC_ALLOW_DESTRUCTIVE=true in your environment to enable add/delete tools."
+        )
     try:
         service = get_gsc_service()
         
@@ -475,13 +489,15 @@ async def get_sitemaps(site_url: str) -> str:
                 except:
                     pass
             
-            status = "Valid"
-            if "errors" in sitemap and int(sitemap["errors"]) > 0:
-                status = "Has errors"
-            
-            # Get counts
-            warnings = int(sitemap.get("warnings", 0))
+            # Cast first — GSC API returns these as strings, not integers
             errors = int(sitemap.get("errors", 0))
+            warnings = int(sitemap.get("warnings", 0))
+
+            status = "Valid"
+            if errors > 0:
+                status = "Has errors"
+            elif warnings > 0:
+                status = "Has warnings"
 
             # Get contents if available
             indexed_urls = "N/A"
@@ -1512,6 +1528,11 @@ async def delete_sitemap(site_url: str, sitemap_url: str) -> str:
                   domain property as site_url and filter by page to analyze a specific subdomain.
         sitemap_url: The full URL of the sitemap to delete
     """
+    if not ALLOW_DESTRUCTIVE:
+        return (
+            "Safety: delete_sitemap permanently removes a sitemap from GSC. "
+            "Set GSC_ALLOW_DESTRUCTIVE=true in your environment to enable add/delete tools."
+        )
     try:
         service = get_gsc_service()
         
@@ -1643,6 +1664,25 @@ async def reauthenticate() -> str:
         return f"Error during reauthentication: {str(e)}"
 
 
+def main():
+    """Entry point for the MCP server. Supports stdio (default) and SSE transports."""
+    transport = os.environ.get("MCP_TRANSPORT", "stdio").lower()
+    host = os.environ.get("MCP_HOST", "127.0.0.1")
+    try:
+        port = int(os.environ.get("MCP_PORT", "3001"))
+    except ValueError:
+        raise ValueError("MCP_PORT must be an integer")
+
+    if transport == "stdio":
+        mcp.run(transport="stdio")
+    elif transport in {"sse", "http"}:
+        mcp.run(transport="sse", host=host, port=port)
+    else:
+        raise ValueError(
+            f"Unknown MCP_TRANSPORT '{transport}'. "
+            "Use 'stdio' (default) or 'sse'."
+        )
+
+
 if __name__ == "__main__":
-    # Start the MCP server on stdio transport
-    mcp.run(transport="stdio")
+    main()

@@ -50,3 +50,8 @@ site/
 
 # Logs
 *.log
+
+# Internal fork analysis and planning files — kept local only
+FORK_ANALYSIS.md
+MCP_LEARNINGS.md
+fork-review.html
