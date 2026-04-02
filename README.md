@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/aminforou-mcp-gsc-badge.png)](https://mseep.ai/app/aminforou-mcp-gsc)
+
 # Google Search Console MCP server for SEOs
 
 > **April 2026 (v0.2.2):** Safety mode for destructive tools, HTTP/SSE transport, official Dockerfile, sitemap warning fix, and PyPI fix. See the [Changelog](#changelog) for details.
