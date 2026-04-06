@@ -26,8 +26,8 @@ dependencies = [
 ]
 
 [project.urls]
-"Homepage" = "https://github.com/aminfseo/mcp-gsc"
-"Bug Tracker" = "https://github.com/aminfseo/mcp-gsc/issues"
+"Homepage" = "https://github.com/AminForou/mcp-gsc"
+"Bug Tracker" = "https://github.com/AminForou/mcp-gsc/issues"
 
 [project.scripts]
 mcp-gsc = "gsc_server:main"
