@@ -126,9 +126,32 @@ You'll need to install these tools on your computer:
 
 Make sure both Python and Node.js are properly installed and available in your system path before proceeding.
 
-### 3. Download the Google Search Console MCP 
+### 3. Install the MCP Server
 
-You need to download this tool to your computer. The easiest way is:
+**Option A — `uvx` (simplest, no clone needed)**
+
+If you have [uv](https://docs.astral.sh/uv/) installed, you can skip cloning entirely. Use this config directly in step 5:
+
+```json
+{
+  "mcpServers": {
+    "gscServer": {
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/AminForou/mcp-gsc", "mcp-gsc"],
+      "env": {
+        "GSC_CREDENTIALS_PATH": "/FULL/PATH/TO/service_account_credentials.json",
+        "GSC_SKIP_OAUTH": "true"
+      }
+    }
+  }
+}
+```
+
+`uvx` installs the server in an isolated environment automatically and keeps it up to date. No virtual environment management needed. Skip to [Step 5](#5-connect-your-ai-client-to-google-search-console) if using this option.
+
+**Option B — Clone manually (more control)**
+
+Download this tool to your computer. The easiest way is:
 
 1. Click the green "Code" button at the top of this page
 2. Select "Download ZIP"
@@ -140,7 +163,7 @@ Alternatively, if you're familiar with Git:
 git clone https://github.com/AminForou/mcp-gsc.git
 ```
 
-### 4. Install Required Components
+### 4. Install Required Components (Option B only)
 
 Open your computer's Terminal (Mac) or Command Prompt (Windows):
 
