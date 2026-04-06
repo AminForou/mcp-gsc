@@ -4,7 +4,8 @@ version = "0.2.2"
 description = "Google Search Console integration for Model Context Protocol (MCP)"
 readme = "README.md"
 requires-python = ">=3.11"
-license = {text = "MIT"}
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
     {name = "Amin Foroutan", email = "aio@aminforoutan.com"}
 ]
@@ -12,7 +13,6 @@ keywords = ["mcp", "google search console", "seo", "claude", "search analytics"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Topic :: Internet :: WWW/HTTP :: Indexing/Search",
