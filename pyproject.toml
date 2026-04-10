@@ -1,6 +1,6 @@
 [project]
-name = "mcp-gsc"
-version = "0.2.2"
+name = "mcp-search-console"
+version = "0.3.0"
 description = "Google Search Console integration for Model Context Protocol (MCP)"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -23,6 +23,7 @@ dependencies = [
     "google-auth-httplib2>=0.2.0",
     "google-auth-oauthlib>=1.2.1",
     "mcp[cli]>=1.3.0",
+    "platformdirs>=4.0.0",
 ]
 
 [project.urls]
@@ -31,6 +32,7 @@ dependencies = [
 
 [project.scripts]
 mcp-gsc = "gsc_server:main"
+mcp-search-console = "gsc_server:main"
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]

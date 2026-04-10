@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "mcp-search-console": {
+      "command": "uvx",
+      "args": ["mcp-search-console"],
+      "env": {
+        "GSC_CREDENTIALS_PATH": "",
+        "GSC_OAUTH_CLIENT_SECRETS_FILE": "",
+        "GSC_DATA_STATE": "all"
+      }
+    }
+  }
+}

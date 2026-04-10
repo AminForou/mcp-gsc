@@ -3,7 +3,9 @@ import logging
 import os
 import json
 import sys
+import shutil
 from datetime import datetime, timedelta
+from platformdirs import user_config_dir
 
 import google.auth
 from google.auth.transport.requests import Request
@@ -40,8 +42,18 @@ OAUTH_CLIENT_SECRETS_FILE = os.environ.get("GSC_OAUTH_CLIENT_SECRETS_FILE")
 if not OAUTH_CLIENT_SECRETS_FILE:
     OAUTH_CLIENT_SECRETS_FILE = os.path.join(SCRIPT_DIR, "client_secrets.json")
 
-# Token file path for storing OAuth tokens
-TOKEN_FILE = os.path.join(SCRIPT_DIR, "token.json")
+# Token file path for storing OAuth tokens.
+# Stored in the user config directory so it survives uvx updates (which replace SCRIPT_DIR).
+# Override with GSC_CONFIG_DIR env var for Docker/power users.
+_CONFIG_DIR = os.environ.get("GSC_CONFIG_DIR") or user_config_dir("mcp-gsc")
+os.makedirs(_CONFIG_DIR, exist_ok=True)
+TOKEN_FILE = os.path.join(_CONFIG_DIR, "token.json")
+
+# Silently migrate token from old location (SCRIPT_DIR) on first run after upgrade.
+# Existing users never need to re-authenticate.
+_OLD_TOKEN = os.path.join(SCRIPT_DIR, "token.json")
+if os.path.exists(_OLD_TOKEN) and not os.path.exists(TOKEN_FILE):
+    shutil.move(_OLD_TOKEN, TOKEN_FILE)
 
 # Environment variable to skip OAuth authentication
 SKIP_OAUTH = os.environ.get("GSC_SKIP_OAUTH", "").lower() in ("true", "1", "yes")
@@ -74,7 +86,7 @@ def get_gsc_service():
             return get_gsc_service_oauth()
         except Exception as e:
             # If OAuth fails, try service account
-            print(f"OAuth authentication failed: {str(e)}")
+            logging.warning("OAuth authentication failed: %s", e)
             pass
     
     # Try service account authentication
@@ -147,7 +159,8 @@ def get_gsc_service_oauth():
                     f"or set the GSC_OAUTH_CLIENT_SECRETS_FILE environment variable."
                 )
 
-            # Start OAuth flow (only when running interactively)
+            # Start OAuth flow (only when running interactively — isatty guard above prevents
+            # reaching this point in MCP stdio context).
             flow = InstalledAppFlow.from_client_secrets_file(OAUTH_CLIENT_SECRETS_FILE, SCOPES)
             creds = flow.run_local_server(port=0)
             
@@ -204,14 +217,16 @@ async def list_properties() -> str:
         if not sites:
             return "No Search Console properties found."
 
-        # Format the results for easy reading
-        lines = []
-        for site in sites:
-            site_url = site.get("siteUrl", "Unknown")
-            permission = site.get("permissionLevel", "Unknown permission")
-            lines.append(f"- {site_url} ({permission})")
-
-        return "\n".join(lines)
+        return json.dumps({
+            "count": len(sites),
+            "properties": [
+                {
+                    "site_url": site.get("siteUrl", "Unknown"),
+                    "permission_level": site.get("permissionLevel", "Unknown"),
+                }
+                for site in sites
+            ],
+        })
     except FileNotFoundError as e:
         return (
             "Error: Service account credentials file not found.\n\n"
@@ -379,35 +394,29 @@ async def get_search_analytics(site_url: str, days: int = 28, dimensions: str = 
         
         if not response.get("rows"):
             return f"No search analytics data found for {site_url} in the last {days} days."
-        
-        # Format results
-        result_lines = [f"Search analytics for {site_url} (last {days} days):"]
-        result_lines.append("\n" + "-" * 80 + "\n")
-        
-        # Create header based on dimensions
-        header = []
-        for dim in dimension_list:
-            header.append(dim.capitalize())
-        header.extend(["Clicks", "Impressions", "CTR", "Position"])
-        result_lines.append(" | ".join(header))
-        result_lines.append("-" * 80)
-        
-        # Add data rows
+
+        rows = []
         for row in response.get("rows", []):
-            data = []
-            # Add dimension values
-            for dim_value in row.get("keys", []):
-                data.append(dim_value[:100])  # Increased truncation limit to 100 characters
-            
-            # Add metrics
-            data.append(str(row.get("clicks", 0)))
-            data.append(str(row.get("impressions", 0)))
-            data.append(f"{row.get('ctr', 0) * 100:.2f}%")
-            data.append(f"{row.get('position', 0):.1f}")
-            
-            result_lines.append(" | ".join(data))
-        
-        return "\n".join(result_lines)
+            entry = {}
+            for i, dim in enumerate(dimension_list):
+                entry[dim] = row.get("keys", [])[i] if i < len(row.get("keys", [])) else None
+            entry["clicks"] = row.get("clicks", 0)
+            entry["impressions"] = row.get("impressions", 0)
+            entry["ctr"] = round(row.get("ctr", 0), 4)
+            entry["position"] = round(row.get("position", 0), 1)
+            rows.append(entry)
+
+        return json.dumps({
+            "site_url": site_url,
+            "date_range": {
+                "start": start_date.strftime("%Y-%m-%d"),
+                "end": end_date.strftime("%Y-%m-%d"),
+                "days": days,
+            },
+            "dimensions": dimension_list,
+            "row_count": len(rows),
+            "rows": rows,
+        })
     except Exception as e:
         if "404" in str(e):
             return _site_not_found_error(site_url)
@@ -429,34 +438,27 @@ async def get_site_details(site_url: str) -> str:
         # Get site details
         site_info = service.sites().get(siteUrl=site_url).execute()
         
-        # Format the results
-        result_lines = [f"Site details for {site_url}:"]
-        result_lines.append("-" * 50)
-        
-        # Add basic info
-        result_lines.append(f"Permission level: {site_info.get('permissionLevel', 'Unknown')}")
-        
-        # Add verification info if available
+        result = {
+            "site_url": site_url,
+            "permission_level": site_info.get("permissionLevel", "Unknown"),
+        }
+
         if "siteVerificationInfo" in site_info:
             verify_info = site_info["siteVerificationInfo"]
-            result_lines.append(f"Verification state: {verify_info.get('verificationState', 'Unknown')}")
-            
-            if "verifiedUser" in verify_info:
-                result_lines.append(f"Verified by: {verify_info['verifiedUser']}")
-                
-            if "verificationMethod" in verify_info:
-                result_lines.append(f"Verification method: {verify_info['verificationMethod']}")
-        
-        # Add ownership info if available
+            result["verification"] = {
+                "state": verify_info.get("verificationState", "Unknown"),
+                "verified_user": verify_info.get("verifiedUser"),
+                "method": verify_info.get("verificationMethod"),
+            }
+
         if "ownershipInfo" in site_info:
             owner_info = site_info["ownershipInfo"]
-            result_lines.append("\nOwnership Information:")
-            result_lines.append(f"Owner: {owner_info.get('owner', 'Unknown')}")
-            
-            if "verificationMethod" in owner_info:
-                result_lines.append(f"Ownership verification: {owner_info['verificationMethod']}")
-        
-        return "\n".join(result_lines)
+            result["ownership"] = {
+                "owner": owner_info.get("owner", "Unknown"),
+                "verification_method": owner_info.get("verificationMethod"),
+            }
+
+        return json.dumps(result)
     except Exception as e:
         return f"Error retrieving site details: {str(e)}"
 
@@ -478,30 +480,17 @@ async def get_sitemaps(site_url: str) -> str:
         
         if not sitemaps.get("sitemap"):
             return f"No sitemaps found for {site_url}."
-        
-        # Format the results
-        result_lines = [f"Sitemaps for {site_url}:"]
-        result_lines.append("-" * 80)
-        
-        # Header
-        result_lines.append("Path | Last Downloaded | Status | Indexed URLs | Errors")
-        result_lines.append("-" * 80)
-        
-        # Add each sitemap
+
+        sitemap_list = []
         for sitemap in sitemaps.get("sitemap", []):
-            path = sitemap.get("path", "Unknown")
-            last_downloaded = sitemap.get("lastDownloaded", "Never")
-            
-            # Format last downloaded date if it exists
-            if last_downloaded != "Never":
+            last_downloaded = sitemap.get("lastDownloaded")
+            if last_downloaded:
                 try:
-                    # Convert to more readable format
-                    dt = datetime.fromisoformat(last_downloaded.replace('Z', '+00:00'))
+                    dt = datetime.fromisoformat(last_downloaded.replace("Z", "+00:00"))
                     last_downloaded = dt.strftime("%Y-%m-%d %H:%M")
-                except:
+                except Exception:
                     pass
-            
-            # Cast first — GSC API returns these as strings, not integers
+
             errors = int(sitemap.get("errors", 0))
             warnings = int(sitemap.get("warnings", 0))
 
@@ -511,17 +500,27 @@ async def get_sitemaps(site_url: str) -> str:
             elif warnings > 0:
                 status = "Has warnings"
 
-            # Get contents if available
-            indexed_urls = "N/A"
+            indexed_urls = None
             if "contents" in sitemap:
                 for content in sitemap["contents"]:
                     if content.get("type") == "web":
-                        indexed_urls = content.get("submitted", "0")
+                        indexed_urls = content.get("submitted")
                         break
-            
-            result_lines.append(f"{path} | {last_downloaded} | {status} | {indexed_urls} | {errors}")
-        
-        return "\n".join(result_lines)
+
+            sitemap_list.append({
+                "path": sitemap.get("path", "Unknown"),
+                "last_downloaded": last_downloaded,
+                "status": status,
+                "indexed_urls": indexed_urls,
+                "errors": errors,
+                "warnings": warnings,
+            })
+
+        return json.dumps({
+            "site_url": site_url,
+            "count": len(sitemap_list),
+            "sitemaps": sitemap_list,
+        })
     except Exception as e:
         if "404" in str(e):
             return _site_not_found_error(site_url)
@@ -552,98 +551,49 @@ async def inspect_url_enhanced(site_url: str, page_url: str) -> str:
         
         if not response or "inspectionResult" not in response:
             return f"No inspection data found for {page_url}."
-        
+
         inspection = response["inspectionResult"]
-        
-        # Format the results
-        result_lines = [f"URL Inspection for {page_url}:"]
-        result_lines.append("-" * 80)
-        
-        # Add inspection result link if available
-        if "inspectionResultLink" in inspection:
-            result_lines.append(f"Search Console Link: {inspection['inspectionResultLink']}")
-            result_lines.append("-" * 80)
-        
-        # Indexing status section
         index_status = inspection.get("indexStatusResult", {})
-        verdict = index_status.get("verdict", "UNKNOWN")
-        
-        result_lines.append(f"Indexing Status: {verdict}")
-        
-        # Coverage state
-        if "coverageState" in index_status:
-            result_lines.append(f"Coverage: {index_status['coverageState']}")
-        
-        # Last crawl
+
+        last_crawled = None
         if "lastCrawlTime" in index_status:
             try:
-                crawl_time = datetime.fromisoformat(index_status["lastCrawlTime"].replace('Z', '+00:00'))
-                result_lines.append(f"Last Crawled: {crawl_time.strftime('%Y-%m-%d %H:%M')}")
-            except:
-                result_lines.append(f"Last Crawled: {index_status['lastCrawlTime']}")
-        
-        # Page fetch
-        if "pageFetchState" in index_status:
-            result_lines.append(f"Page Fetch: {index_status['pageFetchState']}")
-        
-        # Robots.txt status
-        if "robotsTxtState" in index_status:
-            result_lines.append(f"Robots.txt: {index_status['robotsTxtState']}")
-        
-        # Indexing state
-        if "indexingState" in index_status:
-            result_lines.append(f"Indexing State: {index_status['indexingState']}")
-        
-        # Canonical information
-        if "googleCanonical" in index_status:
-            result_lines.append(f"Google Canonical: {index_status['googleCanonical']}")
-        
-        if "userCanonical" in index_status and index_status.get("userCanonical") != index_status.get("googleCanonical"):
-            result_lines.append(f"User Canonical: {index_status['userCanonical']}")
-        
-        # Crawled as
-        if "crawledAs" in index_status:
-            result_lines.append(f"Crawled As: {index_status['crawledAs']}")
-        
-        # Referring URLs
-        if "referringUrls" in index_status and index_status["referringUrls"]:
-            result_lines.append("\nReferring URLs:")
-            for url in index_status["referringUrls"][:5]:  # Limit to 5 examples
-                result_lines.append(f"- {url}")
-            
-            if len(index_status["referringUrls"]) > 5:
-                result_lines.append(f"... and {len(index_status['referringUrls']) - 5} more")
-        
-        # Rich results
+                crawl_time = datetime.fromisoformat(index_status["lastCrawlTime"].replace("Z", "+00:00"))
+                last_crawled = crawl_time.strftime("%Y-%m-%d %H:%M")
+            except Exception:
+                last_crawled = index_status["lastCrawlTime"]
+
+        rich_results = None
         if "richResultsResult" in inspection:
             rich = inspection["richResultsResult"]
-            result_lines.append(f"\nRich Results: {rich.get('verdict', 'UNKNOWN')}")
-            
-            if "detectedItems" in rich and rich["detectedItems"]:
-                result_lines.append("Detected Rich Result Types:")
-                
-                for item in rich["detectedItems"]:
-                    rich_type = item.get("richResultType", "Unknown")
-                    result_lines.append(f"- {rich_type}")
-                    
-                    # If there are items with names, show them
-                    if "items" in item and item["items"]:
-                        for i, subitem in enumerate(item["items"][:3]):  # Limit to 3 examples
-                            if "name" in subitem:
-                                result_lines.append(f"  • {subitem['name']}")
-                        
-                        if len(item["items"]) > 3:
-                            result_lines.append(f"  • ... and {len(item['items']) - 3} more items")
-            
-            # Check for issues
-            if "richResultsIssues" in rich and rich["richResultsIssues"]:
-                result_lines.append("\nRich Results Issues:")
-                for issue in rich["richResultsIssues"]:
-                    severity = issue.get("severity", "Unknown")
-                    message = issue.get("message", "Unknown issue")
-                    result_lines.append(f"- [{severity}] {message}")
-        
-        return "\n".join(result_lines)
+            rich_results = {
+                "verdict": rich.get("verdict", "UNKNOWN"),
+                "detected_types": [
+                    item.get("richResultType", "Unknown")
+                    for item in rich.get("detectedItems", [])
+                ],
+                "issues": [
+                    {"severity": issue.get("severity"), "message": issue.get("message")}
+                    for issue in rich.get("richResultsIssues", [])
+                ],
+            }
+
+        return json.dumps({
+            "page_url": page_url,
+            "site_url": site_url,
+            "inspection_result_link": inspection.get("inspectionResultLink"),
+            "verdict": index_status.get("verdict", "UNKNOWN"),
+            "coverage_state": index_status.get("coverageState"),
+            "last_crawled": last_crawled,
+            "page_fetch_state": index_status.get("pageFetchState"),
+            "robots_txt_state": index_status.get("robotsTxtState"),
+            "indexing_state": index_status.get("indexingState"),
+            "google_canonical": index_status.get("googleCanonical"),
+            "user_canonical": index_status.get("userCanonical"),
+            "crawled_as": index_status.get("crawledAs"),
+            "referring_urls": index_status.get("referringUrls", [])[:5],
+            "rich_results": rich_results,
+        })
     except Exception as e:
         if "404" in str(e):
             return _site_not_found_error(site_url)
@@ -713,15 +663,23 @@ async def batch_url_inspection(site_url: str, urls: str) -> str:
                         rich_types = [item.get("richResultType", "Unknown") for item in rich["detectedItems"]]
                         rich_results = ", ".join(rich_types)
                 
-                # Format result
-                results.append(f"{page_url}:\n  Status: {verdict} - {coverage}\n  Last Crawl: {last_crawl}\n  Rich Results: {rich_results}\n")
-            
+                results.append({
+                    "url": page_url,
+                    "verdict": verdict,
+                    "coverage_state": coverage,
+                    "last_crawled": last_crawl,
+                    "rich_results": rich_results,
+                })
+
             except Exception as e:
-                results.append(f"{page_url}: Error - {str(e)}")
-        
-        # Combine results
-        return f"Batch URL Inspection Results for {site_url}:\n\n" + "\n".join(results)
-    
+                results.append({"url": page_url, "error": str(e)})
+
+        return json.dumps({
+            "site_url": site_url,
+            "count": len(results),
+            "results": results,
+        })
+
     except Exception as e:
         return f"Error performing batch inspection: {str(e)}"
 
@@ -807,42 +765,25 @@ async def check_indexing_issues(site_url: str, urls: str) -> str:
             except Exception as e:
                 issues_summary["not_indexed"].append(f"{page_url} - Error: {str(e)}")
         
-        # Format results
-        result_lines = [f"Indexing Issues Report for {site_url}:"]
-        result_lines.append("-" * 80)
-        
-        # Summary counts
-        result_lines.append(f"Total URLs checked: {len(url_list)}")
-        result_lines.append(f"Indexed: {len(issues_summary['indexed'])}")
-        result_lines.append(f"Not indexed: {len(issues_summary['not_indexed'])}")
-        result_lines.append(f"Canonical issues: {len(issues_summary['canonical_issues'])}")
-        result_lines.append(f"Robots.txt blocked: {len(issues_summary['robots_blocked'])}")
-        result_lines.append(f"Fetch issues: {len(issues_summary['fetch_issues'])}")
-        result_lines.append("-" * 80)
-        
-        # Detailed issues
-        if issues_summary["not_indexed"]:
-            result_lines.append("\nNot Indexed URLs:")
-            for issue in issues_summary["not_indexed"]:
-                result_lines.append(f"- {issue}")
-        
-        if issues_summary["canonical_issues"]:
-            result_lines.append("\nCanonical Issues:")
-            for issue in issues_summary["canonical_issues"]:
-                result_lines.append(f"- {issue}")
-        
-        if issues_summary["robots_blocked"]:
-            result_lines.append("\nRobots.txt Blocked URLs:")
-            for url in issues_summary["robots_blocked"]:
-                result_lines.append(f"- {url}")
-        
-        if issues_summary["fetch_issues"]:
-            result_lines.append("\nFetch Issues:")
-            for issue in issues_summary["fetch_issues"]:
-                result_lines.append(f"- {issue}")
-        
-        return "\n".join(result_lines)
-    
+        return json.dumps({
+            "site_url": site_url,
+            "summary": {
+                "total_checked": len(url_list),
+                "indexed": len(issues_summary["indexed"]),
+                "not_indexed": len(issues_summary["not_indexed"]),
+                "canonical_issues": len(issues_summary["canonical_issues"]),
+                "robots_blocked": len(issues_summary["robots_blocked"]),
+                "fetch_issues": len(issues_summary["fetch_issues"]),
+            },
+            "issues": {
+                "not_indexed": issues_summary["not_indexed"],
+                "canonical_issues": issues_summary["canonical_issues"],
+                "robots_blocked": issues_summary["robots_blocked"],
+                "fetch_issues": issues_summary["fetch_issues"],
+            },
+            "indexed_urls": issues_summary["indexed"],
+        })
+
     except Exception as e:
         return f"Error checking indexing issues: {str(e)}"
 
@@ -886,47 +827,39 @@ async def get_performance_overview(site_url: str, days: int = 28) -> str:
         
         date_response = service.searchanalytics().query(siteUrl=site_url, body=date_request).execute()
         
-        # Format results
-        result_lines = [f"Performance Overview for {site_url} (last {days} days):"]
-        result_lines.append("-" * 80)
-        
-        # Add total metrics
-        if total_response.get("rows"):
-            row = total_response["rows"][0]
-            result_lines.append(f"Total Clicks: {row.get('clicks', 0):,}")
-            result_lines.append(f"Total Impressions: {row.get('impressions', 0):,}")
-            result_lines.append(f"Average CTR: {row.get('ctr', 0) * 100:.2f}%")
-            result_lines.append(f"Average Position: {row.get('position', 0):.1f}")
-        else:
-            result_lines.append("No data available for the selected period.")
-            return "\n".join(result_lines)
-        
-        # Add trend data
+        if not total_response.get("rows"):
+            return f"No performance data available for {site_url} in the last {days} days."
+
+        totals_row = total_response["rows"][0]
+        totals = {
+            "clicks": totals_row.get("clicks", 0),
+            "impressions": totals_row.get("impressions", 0),
+            "ctr": round(totals_row.get("ctr", 0), 4),
+            "position": round(totals_row.get("position", 0), 1),
+        }
+
+        daily_trend = []
         if date_response.get("rows"):
-            result_lines.append("\nDaily Trend:")
-            result_lines.append("Date | Clicks | Impressions | CTR | Position")
-            result_lines.append("-" * 80)
-            
-            # Sort by date
             sorted_rows = sorted(date_response["rows"], key=lambda x: x["keys"][0])
-            
             for row in sorted_rows:
-                date_str = row["keys"][0]
-                # Format date from YYYY-MM-DD to MM/DD
-                try:
-                    date_obj = datetime.strptime(date_str, "%Y-%m-%d")
-                    date_formatted = date_obj.strftime("%m/%d")
-                except:
-                    date_formatted = date_str
-                
-                clicks = row.get("clicks", 0)
-                impressions = row.get("impressions", 0)
-                ctr = row.get("ctr", 0) * 100
-                position = row.get("position", 0)
-                
-                result_lines.append(f"{date_formatted} | {clicks:.0f} | {impressions:.0f} | {ctr:.2f}% | {position:.1f}")
-        
-        return "\n".join(result_lines)
+                daily_trend.append({
+                    "date": row["keys"][0],
+                    "clicks": row.get("clicks", 0),
+                    "impressions": row.get("impressions", 0),
+                    "ctr": round(row.get("ctr", 0), 4),
+                    "position": round(row.get("position", 0), 1),
+                })
+
+        return json.dumps({
+            "site_url": site_url,
+            "date_range": {
+                "start": start_date.strftime("%Y-%m-%d"),
+                "end": end_date.strftime("%Y-%m-%d"),
+                "days": days,
+            },
+            "totals": totals,
+            "daily_trend": daily_trend,
+        })
     except Exception as e:
         if "404" in str(e):
             return _site_not_found_error(site_url)
@@ -1066,48 +999,32 @@ async def get_advanced_search_analytics(
                 no_data_msg += "- No filter applied\n"
             return no_data_msg
         
-        # Format results
-        result_lines = [f"Search analytics for {site_url}:"]
-        result_lines.append(f"Date range: {start_date} to {end_date}")
-        result_lines.append(f"Search type: {search_type}")
-        if active_filters:
-            filter_desc = " AND ".join(
-                f"{f['dimension']} {f['operator']} '{f['expression']}'" for f in active_filters
-            )
-            result_lines.append(f"Filters: {filter_desc}")
-        result_lines.append(f"Showing rows {start_row+1} to {start_row+len(response.get('rows', []))} (sorted by {sort_by} {sort_direction})")
-        result_lines.append("\n" + "-" * 80 + "\n")
-        
-        # Create header based on dimensions
-        header = []
-        for dim in dimension_list:
-            header.append(dim.capitalize())
-        header.extend(["Clicks", "Impressions", "CTR", "Position"])
-        result_lines.append(" | ".join(header))
-        result_lines.append("-" * 80)
-        
-        # Add data rows
+        rows = []
         for row in response.get("rows", []):
-            data = []
-            # Add dimension values
-            for dim_value in row.get("keys", []):
-                data.append(dim_value[:100])  # Increased truncation limit to 100 characters
-            
-            # Add metrics
-            data.append(str(row.get("clicks", 0)))
-            data.append(str(row.get("impressions", 0)))
-            data.append(f"{row.get('ctr', 0) * 100:.2f}%")
-            data.append(f"{row.get('position', 0):.1f}")
-            
-            result_lines.append(" | ".join(data))
-        
-        # Add pagination info if there might be more results
-        if len(response.get("rows", [])) == row_limit:
-            next_start = start_row + row_limit
-            result_lines.append("\nThere may be more results available. To see the next page, use:")
-            result_lines.append(f"start_row: {next_start}, row_limit: {row_limit}")
-        
-        return "\n".join(result_lines)
+            entry = {}
+            for i, dim in enumerate(dimension_list):
+                entry[dim] = row.get("keys", [])[i] if i < len(row.get("keys", [])) else None
+            entry["clicks"] = row.get("clicks", 0)
+            entry["impressions"] = row.get("impressions", 0)
+            entry["ctr"] = round(row.get("ctr", 0), 4)
+            entry["position"] = round(row.get("position", 0), 1)
+            rows.append(entry)
+
+        has_more = len(response.get("rows", [])) == row_limit
+        return json.dumps({
+            "site_url": site_url,
+            "date_range": {"start": start_date, "end": end_date},
+            "search_type": search_type,
+            "dimensions": dimension_list,
+            "filters_applied": active_filters,
+            "pagination": {
+                "start_row": start_row,
+                "row_count": len(rows),
+                "has_more": has_more,
+                "next_start_row": start_row + row_limit if has_more else None,
+            },
+            "rows": rows,
+        })
     except Exception as e:
         if "404" in str(e):
             return _site_not_found_error(site_url)
@@ -1210,41 +1127,40 @@ async def compare_search_periods(
                 "pos_diff": pos_diff
             })
         
-        # Sort by absolute click difference (can change to other metrics)
+        # Sort by absolute click difference
         comparison_data.sort(key=lambda x: abs(x["click_diff"]), reverse=True)
-        
-        # Format results
-        result_lines = [f"Search analytics comparison for {site_url}:"]
-        result_lines.append(f"Period 1: {period1_start} to {period1_end}")
-        result_lines.append(f"Period 2: {period2_start} to {period2_end}")
-        result_lines.append(f"Dimension(s): {dimensions}")
-        result_lines.append(f"Top {min(limit, len(comparison_data))} results by change in clicks:")
-        result_lines.append("\n" + "-" * 100 + "\n")
-        
-        # Create header
-        dim_header = " | ".join([d.capitalize() for d in dimension_list])
-        result_lines.append(f"{dim_header} | P1 Clicks | P2 Clicks | Change | % | P1 Pos | P2 Pos | Pos Δ")
-        result_lines.append("-" * 100)
-        
-        # Add data rows (limited to requested number)
+
+        serialisable = []
         for item in comparison_data[:limit]:
-            key_str = " | ".join([str(k)[:100] for k in item["key"]])
-            
-            # Format the click change with color indicators
-            click_change = item["click_diff"]
-            click_pct = item["click_pct"] if item["click_pct"] != float('inf') else "N/A"
-            click_pct_str = f"{click_pct:.1f}%" if click_pct != "N/A" else "N/A"
-            
-            # Format position change (positive is good - moving up in rankings)
-            pos_change = item["pos_diff"]
-            
-            result_lines.append(
-                f"{key_str} | {item['p1_clicks']} | {item['p2_clicks']} | "
-                f"{click_change:+d} | {click_pct_str} | "
-                f"{item['p1_position']:.1f} | {item['p2_position']:.1f} | {pos_change:+.1f}"
-            )
-        
-        return "\n".join(result_lines)
+            click_pct = item["click_pct"] if item["click_pct"] != float("inf") else None
+            imp_pct = item["imp_pct"] if item["imp_pct"] != float("inf") else None
+            serialisable.append({
+                "key": list(item["key"]),
+                "p1_clicks": item["p1_clicks"],
+                "p2_clicks": item["p2_clicks"],
+                "click_diff": item["click_diff"],
+                "click_pct": round(click_pct, 1) if click_pct is not None else None,
+                "p1_impressions": item["p1_impressions"],
+                "p2_impressions": item["p2_impressions"],
+                "imp_diff": item["imp_diff"],
+                "imp_pct": round(imp_pct, 1) if imp_pct is not None else None,
+                "p1_ctr": round(item["p1_ctr"], 4),
+                "p2_ctr": round(item["p2_ctr"], 4),
+                "ctr_diff": round(item["ctr_diff"], 4),
+                "p1_position": round(item["p1_position"], 1),
+                "p2_position": round(item["p2_position"], 1),
+                "position_diff": round(item["pos_diff"], 1),
+            })
+
+        return json.dumps({
+            "site_url": site_url,
+            "period1": {"start": period1_start, "end": period1_end},
+            "period2": {"start": period2_start, "end": period2_end},
+            "dimensions": dimension_list,
+            "total_items": len(comparison_data),
+            "showing": len(serialisable),
+            "comparison": serialisable,
+        })
     except Exception as e:
         if "404" in str(e):
             return _site_not_found_error(site_url)
@@ -1300,33 +1216,35 @@ async def get_search_by_page_query(
         if not response.get("rows"):
             return f"No search data found for page {page_url} in the last {days} days."
         
-        # Format results
-        result_lines = [f"Search queries for page {page_url} (last {days} days):"]
-        result_lines.append("\n" + "-" * 80 + "\n")
-        
-        # Create header
-        result_lines.append("Query | Clicks | Impressions | CTR | Position")
-        result_lines.append("-" * 80)
-        
-        # Add data rows
+        rows = []
         for row in response.get("rows", []):
-            query = row.get("keys", ["Unknown"])[0]
-            clicks = row.get("clicks", 0)
-            impressions = row.get("impressions", 0)
-            ctr = row.get("ctr", 0) * 100
-            position = row.get("position", 0)
-            
-            result_lines.append(f"{query[:100]} | {clicks} | {impressions} | {ctr:.2f}% | {position:.1f}")
-        
-        # Add total metrics
-        total_clicks = sum(row.get("clicks", 0) for row in response.get("rows", []))
-        total_impressions = sum(row.get("impressions", 0) for row in response.get("rows", []))
-        avg_ctr = (total_clicks / total_impressions * 100) if total_impressions > 0 else 0
-        
-        result_lines.append("-" * 80)
-        result_lines.append(f"TOTAL | {total_clicks} | {total_impressions} | {avg_ctr:.2f}% | -")
-        
-        return "\n".join(result_lines)
+            rows.append({
+                "query": row.get("keys", ["Unknown"])[0],
+                "clicks": row.get("clicks", 0),
+                "impressions": row.get("impressions", 0),
+                "ctr": round(row.get("ctr", 0), 4),
+                "position": round(row.get("position", 0), 1),
+            })
+
+        total_clicks = sum(r["clicks"] for r in rows)
+        total_impressions = sum(r["impressions"] for r in rows)
+
+        return json.dumps({
+            "site_url": site_url,
+            "page_url": page_url,
+            "date_range": {
+                "start": start_date.strftime("%Y-%m-%d"),
+                "end": end_date.strftime("%Y-%m-%d"),
+                "days": days,
+            },
+            "totals": {
+                "clicks": total_clicks,
+                "impressions": total_impressions,
+                "avg_ctr": round(total_clicks / total_impressions, 4) if total_impressions > 0 else 0,
+            },
+            "row_count": len(rows),
+            "rows": rows,
+        })
     except Exception as e:
         return f"Error retrieving page query data: {str(e)}"
 
@@ -1354,59 +1272,45 @@ async def list_sitemaps_enhanced(site_url: str, sitemap_index: str = None) -> st
         
         if not sitemaps.get("sitemap"):
             return f"No sitemaps found for {site_url}" + (f" in index {sitemap_index}" if sitemap_index else ".")
-        
-        # Format the results
-        result_lines = [f"Sitemaps for {site_url} ({source}):"]
-        result_lines.append("-" * 100)
-        
-        # Header
-        result_lines.append("Path | Last Submitted | Last Downloaded | Type | URLs | Errors | Warnings")
-        result_lines.append("-" * 100)
-        
-        # Add each sitemap
+
+        def _fmt_date(raw):
+            if not raw:
+                return None
+            try:
+                return datetime.fromisoformat(raw.replace("Z", "+00:00")).strftime("%Y-%m-%d %H:%M")
+            except Exception:
+                return raw
+
+        sitemap_list = []
         for sitemap in sitemaps.get("sitemap", []):
-            path = sitemap.get("path", "Unknown")
-            
-            # Format dates
-            last_submitted = sitemap.get("lastSubmitted", "Never")
-            if last_submitted != "Never":
-                try:
-                    dt = datetime.fromisoformat(last_submitted.replace('Z', '+00:00'))
-                    last_submitted = dt.strftime("%Y-%m-%d %H:%M")
-                except:
-                    pass
-            
-            last_downloaded = sitemap.get("lastDownloaded", "Never")
-            if last_downloaded != "Never":
-                try:
-                    dt = datetime.fromisoformat(last_downloaded.replace('Z', '+00:00'))
-                    last_downloaded = dt.strftime("%Y-%m-%d %H:%M")
-                except:
-                    pass
-            
-            # Determine type
-            sitemap_type = "Index" if sitemap.get("isSitemapsIndex", False) else "Sitemap"
-            
-            # Get counts
             errors = int(sitemap.get("errors", 0))
             warnings = int(sitemap.get("warnings", 0))
-
-            # Get URL counts
-            url_count = "N/A"
+            url_count = None
             if "contents" in sitemap:
                 for content in sitemap["contents"]:
                     if content.get("type") == "web":
-                        url_count = content.get("submitted", "0")
+                        url_count = content.get("submitted")
                         break
-            
-            result_lines.append(f"{path} | {last_submitted} | {last_downloaded} | {sitemap_type} | {url_count} | {errors} | {warnings}")
-        
-        # Add processing status if available
-        pending_count = sum(1 for sitemap in sitemaps.get("sitemap", []) if sitemap.get("isPending", False))
-        if pending_count > 0:
-            result_lines.append(f"\nNote: {pending_count} sitemaps are still pending processing by Google.")
-        
-        return "\n".join(result_lines)
+            sitemap_list.append({
+                "path": sitemap.get("path", "Unknown"),
+                "last_submitted": _fmt_date(sitemap.get("lastSubmitted")),
+                "last_downloaded": _fmt_date(sitemap.get("lastDownloaded")),
+                "type": "Index" if sitemap.get("isSitemapsIndex", False) else "Sitemap",
+                "is_pending": sitemap.get("isPending", False),
+                "url_count": url_count,
+                "errors": errors,
+                "warnings": warnings,
+            })
+
+        pending_count = sum(1 for s in sitemap_list if s["is_pending"])
+
+        return json.dumps({
+            "site_url": site_url,
+            "sitemap_index": sitemap_index,
+            "count": len(sitemap_list),
+            "pending_count": pending_count,
+            "sitemaps": sitemap_list,
+        })
     except Exception as e:
         if "404" in str(e):
             return _site_not_found_error(site_url)
@@ -1431,54 +1335,37 @@ async def get_sitemap_details(site_url: str, sitemap_url: str) -> str:
         
         if not details:
             return f"No details found for sitemap {sitemap_url}."
-        
-        # Format the results
-        result_lines = [f"Sitemap Details for {sitemap_url}:"]
-        result_lines.append("-" * 80)
-        
-        # Basic info
+
+        def _fmt_date(raw):
+            if not raw:
+                return None
+            try:
+                return datetime.fromisoformat(raw.replace("Z", "+00:00")).strftime("%Y-%m-%d %H:%M")
+            except Exception:
+                return raw
+
         is_index = details.get("isSitemapsIndex", False)
-        result_lines.append(f"Type: {'Sitemap Index' if is_index else 'Sitemap'}")
-        
-        # Status
-        is_pending = details.get("isPending", False)
-        result_lines.append(f"Status: {'Pending processing' if is_pending else 'Processed'}")
-        
-        # Dates
-        if "lastSubmitted" in details:
-            try:
-                dt = datetime.fromisoformat(details["lastSubmitted"].replace('Z', '+00:00'))
-                result_lines.append(f"Last Submitted: {dt.strftime('%Y-%m-%d %H:%M')}")
-            except:
-                result_lines.append(f"Last Submitted: {details['lastSubmitted']}")
-        
-        if "lastDownloaded" in details:
-            try:
-                dt = datetime.fromisoformat(details["lastDownloaded"].replace('Z', '+00:00'))
-                result_lines.append(f"Last Downloaded: {dt.strftime('%Y-%m-%d %H:%M')}")
-            except:
-                result_lines.append(f"Last Downloaded: {details['lastDownloaded']}")
-        
-        # Errors and warnings
-        result_lines.append(f"Errors: {details.get('errors', 0)}")
-        result_lines.append(f"Warnings: {details.get('warnings', 0)}")
-        
-        # Content breakdown
-        if "contents" in details and details["contents"]:
-            result_lines.append("\nContent Breakdown:")
-            for content in details["contents"]:
-                content_type = content.get("type", "Unknown").upper()
-                submitted = content.get("submitted", 0)
-                indexed = content.get("indexed", "N/A")
-                
-                result_lines.append(f"- {content_type}: {submitted} submitted, {indexed} indexed")
-        
-        # If it's an index, suggest how to list child sitemaps
-        if is_index:
-            result_lines.append("\nThis is a sitemap index. To list child sitemaps, use:")
-            result_lines.append(f"list_sitemaps_enhanced with sitemap_index={sitemap_url}")
-        
-        return "\n".join(result_lines)
+        content_breakdown = [
+            {
+                "type": content.get("type", "unknown").upper(),
+                "submitted": content.get("submitted", 0),
+                "indexed": content.get("indexed"),
+            }
+            for content in details.get("contents", [])
+        ]
+
+        return json.dumps({
+            "sitemap_url": sitemap_url,
+            "site_url": site_url,
+            "type": "Index" if is_index else "Sitemap",
+            "status": "pending" if details.get("isPending", False) else "processed",
+            "last_submitted": _fmt_date(details.get("lastSubmitted")),
+            "last_downloaded": _fmt_date(details.get("lastDownloaded")),
+            "errors": int(details.get("errors", 0)),
+            "warnings": int(details.get("warnings", 0)),
+            "content_breakdown": content_breakdown,
+            "is_index": is_index,
+        })
     except Exception as e:
         return f"Error retrieving sitemap details: {str(e)}"
 

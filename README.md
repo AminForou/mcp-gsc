@@ -1,8 +1,36 @@
 # Google Search Console MCP server for SEOs
 
-> **April 2026 (v0.2.2):** Safety mode for destructive tools, HTTP/SSE transport, official Dockerfile, sitemap warning fix, and PyPI fix. See the [Changelog](#changelog) for details.
+> **April 2026 (v0.3.0):** Coming to the **Cursor Marketplace** — one-click install with bundled SEO skills. Also: token storage moved to user config dir (survives `uvx` upgrades), all data tools now return structured JSON, and 39 new unit tests. See the [Changelog](#changelog) for details.
 
 A Model Context Protocol (MCP) server that connects [Google Search Console](https://search.google.com/search-console/about) (GSC) to AI assistants, allowing you to analyze your SEO data through natural language conversations. Works with **Claude**, **Cursor**, **Codex**, **Gemini CLI**, **Antigravity**, and any other MCP-compatible client. This integration gives you access to property information, search analytics, URL inspection, and sitemap management—all through simple chat.
+
+---
+
+## Cursor Marketplace
+
+> **One-click install available** — search for `mcp-search-console` in the Cursor Marketplace.
+
+After installing, configure your credentials (see [Getting Started](#getting-started-no-coding-experience-required) below) then use the bundled skills directly in Cursor Agent chat:
+
+| Skill | How to invoke | What it does |
+|---|---|---|
+| `seo-weekly-report` | *"Run the SEO weekly report for example.com"* | Full 28-day performance summary with period-over-period comparison and top queries |
+| `cannibalization-check` | *"Check for keyword cannibalization on example.com"* | Finds queries where multiple pages compete; recommends which to keep |
+| `indexing-audit` | *"Audit indexing for my top pages"* | Batch-inspects top 20 pages and returns a prioritized fix list |
+| `content-opportunities` | *"Find content opportunities for example.com"* | Surfaces position-11-20 queries with high impressions and low CTR |
+
+### Required environment variables (set in Cursor MCP settings after install)
+
+| Variable | Required | Description |
+|---|---|---|
+| `GSC_OAUTH_CLIENT_SECRETS_FILE` | One of these two | Path to your OAuth `client_secrets.json` |
+| `GSC_CREDENTIALS_PATH` | One of these two | Path to your service account credentials JSON |
+| `GSC_DATA_STATE` | Optional | `all` (default, matches GSC dashboard) or `final` (2–3 day lag) |
+| `GSC_ALLOW_DESTRUCTIVE` | Optional | Set to `true` to enable add/delete site and delete sitemap tools |
+
+### First-time authentication (OAuth users only)
+
+After installing, ask your AI assistant: *"Authenticate my Google Search Console"* — it will run the `reauthenticate` tool which opens a browser window once to authorize access. Subsequent uses are token-based and require no interaction.
 
 ---
 
@@ -52,7 +80,7 @@ Here's what you can ask your AI assistant to do once you've set up this integrat
 | `get_sitemaps`                  | Lists all sitemaps for your site                            | Your website URL                                                |
 | `submit_sitemap`                | Submits a new sitemap to Google                             | Your website URL and sitemap URL                                |
 
-*For a complete list of all 19 available tools and their detailed descriptions, ask your AI assistant to "list tools" after setup.*
+*For a complete list of all 20 available tools and their detailed descriptions, ask your AI assistant to "list tools" after setup.*
 
 ---
 
@@ -121,10 +149,9 @@ This method uses a service account, which is useful for automated scripts or whe
 You'll need to install these tools on your computer:
 
 - [Python](https://www.python.org/downloads/) (version 3.11 or newer) - This runs the MCP server
-- [Node.js](https://nodejs.org/en) - Required for running the MCP inspector and certain MCP components
 - An MCP-compatible AI client — [Claude Desktop](https://claude.ai/download), [Cursor](https://www.cursor.com/), [Codex CLI](https://github.com/openai/codex), [Gemini CLI](https://github.com/google-gemini/gemini-cli), or [Antigravity](https://antigravity.ai/) are all supported
 
-Make sure both Python and Node.js are properly installed and available in your system path before proceeding.
+Make sure Python is properly installed and available in your system path before proceeding.
 
 ### 3. Install the MCP Server
 
@@ -137,7 +164,7 @@ If you have [uv](https://docs.astral.sh/uv/) installed, you can skip cloning ent
   "mcpServers": {
     "gscServer": {
       "command": "uvx",
-      "args": ["--from", "git+https://github.com/AminForou/mcp-gsc", "mcp-gsc"],
+      "args": ["mcp-search-console"],
       "env": {
         "GSC_CREDENTIALS_PATH": "/FULL/PATH/TO/service_account_credentials.json",
         "GSC_SKIP_OAUTH": "true"
@@ -504,6 +531,15 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
 ---
 
 ## Changelog
+
+### [0.3.0] — April 2026
+
+- **Cursor Marketplace plugin** — added `.cursor-plugin/plugin.json`, `mcp.json`, and 4 bundled SEO skills (`seo-weekly-report`, `cannibalization-check`, `indexing-audit`, `content-opportunities`)
+- **Stable token storage** — OAuth token now stored in the platform user config dir (`~/Library/Application Support/mcp-gsc/` on macOS, `~/.config/mcp-gsc/` on Linux) instead of the package directory; survives `uvx` upgrades. Existing tokens are silently migrated on first run.
+- **Structured JSON output** — all 13 data-returning tools now return structured JSON (`json.dumps`) instead of pipe-separated text, improving AI reasoning accuracy
+- **Dependency fix** — added `platformdirs>=4.0.0`; removed deprecated `oauth2client` from `requirements.txt`
+- **MCP safety** — fixed stdout pollution (`print()` → `logging.warning()`) that could corrupt stdio MCP protocol; replaced silent browser-flow hang in MCP context with clear `RuntimeError` directing users to `reauthenticate`
+- **Test suite** — 39 unit tests covering auth, all 13 data tools, safety guards, stdout cleanliness, and token migration (zero real credentials required)
 
 ### [0.2.2] — April 2026
 

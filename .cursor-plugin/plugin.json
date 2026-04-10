@@ -1,0 +1,16 @@
+{
+  "name": "mcp-search-console",
+  "displayName": "Search Console MCP",
+  "version": "0.3.0",
+  "description": "Connect Google Search Console to Cursor. Query SEO data, inspect URLs, audit indexing, and identify content opportunities through natural language.",
+  "author": {
+    "name": "Amin Foroutan"
+  },
+  "license": "MIT",
+  "homepage": "https://advancedgsc.com",
+  "repository": "https://github.com/AminForou/mcp-gsc",
+  "keywords": ["seo", "google-search-console", "analytics", "mcp", "gsc"],
+  "logo": "./assets/logo.webp",
+  "skills": "./skills/",
+  "mcpServers": "./mcp.json"
+}
