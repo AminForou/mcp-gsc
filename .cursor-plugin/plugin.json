@@ -10,7 +10,7 @@
   "homepage": "https://advancedgsc.com",
   "repository": "https://github.com/AminForou/mcp-gsc",
   "keywords": ["seo", "google-search-console", "analytics", "mcp", "gsc"],
-  "logo": "./assets/logo.webp",
+  "logo": "./assets/logo.png",
   "skills": "./skills/",
   "mcpServers": "./mcp.json"
 }
