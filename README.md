@@ -1,5 +1,6 @@
 # Google Search Console MCP server for SEOs
 
+[![SafeSkill 93/100](https://img.shields.io/badge/SafeSkill-93%2F100_Verified%20Safe-brightgreen)](https://safeskill.dev/scan/aminforou-mcp-gsc)
 > **April 2026 (v0.3.0):** Coming to the **Cursor Marketplace** — one-click install with bundled SEO skills. Also: token storage moved to user config dir (survives `uvx` upgrades), all data tools now return structured JSON, and 39 new unit tests. See the [Changelog](#changelog) for details.
 
 A Model Context Protocol (MCP) server that connects [Google Search Console](https://search.google.com/search-console/about) (GSC) to AI assistants, allowing you to analyze your SEO data through natural language conversations. Works with **Claude**, **Cursor**, **Codex**, **Gemini CLI**, **Antigravity**, and any other MCP-compatible client. This integration gives you access to property information, search analytics, URL inspection, and sitemap management—all through simple chat.
