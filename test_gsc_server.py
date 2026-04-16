@@ -174,6 +174,48 @@ class TestAuth(unittest.TestCase):
         mod = _load_module({"GSC_SKIP_OAUTH": "true"})
         self.assertTrue(mod.SKIP_OAUTH)
 
+    def test_gsc_credentials_path_set_but_missing_fails_fast(self):
+        """When GSC_CREDENTIALS_PATH is set but the file does not exist, get_gsc_service
+        must raise FileNotFoundError immediately with a message that names the specific
+        path AND mentions uvx — instead of silently falling through to SCRIPT_DIR/cwd
+        fallbacks that uvx users cannot reach. Regression guard for issue #25.
+        """
+        missing_path = "/tmp/definitely-does-not-exist-issue-25.json"
+        mod = _load_module({
+            "GSC_CREDENTIALS_PATH": missing_path,
+            "GSC_SKIP_OAUTH": "true",
+        })
+        with self.assertRaises(FileNotFoundError) as ctx:
+            mod.get_gsc_service()
+        msg = str(ctx.exception)
+        self.assertIn("GSC_CREDENTIALS_PATH", msg)
+        self.assertIn(missing_path, msg)
+        self.assertIn("uvx", msg.lower())
+
+    def test_gsc_oauth_client_secrets_file_set_but_missing_fails_fast(self):
+        """Same symmetry for OAuth: if GSC_OAUTH_CLIENT_SECRETS_FILE is set to a
+        nonexistent file, get_gsc_service must fail fast with a clear message
+        instead of silently falling through.
+        """
+        missing_path = "/tmp/definitely-does-not-exist-oauth-issue-25.json"
+        mod = _load_module({
+            "GSC_OAUTH_CLIENT_SECRETS_FILE": missing_path,
+            "GSC_SKIP_OAUTH": "false",
+        })
+        with self.assertRaises(FileNotFoundError) as ctx:
+            mod.get_gsc_service()
+        msg = str(ctx.exception)
+        self.assertIn("GSC_OAUTH_CLIENT_SECRETS_FILE", msg)
+        self.assertIn(missing_path, msg)
+        self.assertIn("uvx", msg.lower())
+
+    def test_gsc_credentials_path_expands_tilde(self):
+        """GSC_CREDENTIALS_PATH must expand ~ so users can write ~/creds.json."""
+        mod = _load_module({"GSC_CREDENTIALS_PATH": "~/this-should-be-expanded.json"})
+        self.assertIsNotNone(mod.GSC_CREDENTIALS_PATH)
+        self.assertNotIn("~", mod.GSC_CREDENTIALS_PATH)
+        self.assertTrue(mod.GSC_CREDENTIALS_PATH.startswith(os.path.expanduser("~")))
+
 
 # ---------------------------------------------------------------------------
 # Shared fixture helper
@@ -220,6 +262,22 @@ class TestListProperties(unittest.IsolatedAsyncioTestCase):
         with patch("gsc_server.get_gsc_service", side_effect=Exception("API error")):
             result = await mod.list_properties()
         self.assertIn("Error", result)
+
+    async def test_surfaces_real_auth_error_not_hardcoded_message(self):
+        """When auth fails with a FileNotFoundError, list_properties must surface the
+        actual exception text (e.g. the OAuth failure reason), NOT a hardcoded
+        service-account-only message. Regression guard for issue #25 comment by
+        platky: an OAuth user saw "Service account credentials file not found" even
+        though they had never configured service accounts.
+        """
+        mod = _load_module()
+        real_error = FileNotFoundError(
+            "OAuth token is missing or expired and cannot be refreshed."
+        )
+        with patch("gsc_server.get_gsc_service", side_effect=real_error):
+            result = await mod.list_properties()
+        self.assertIn("OAuth token is missing", result)
+        self.assertNotIn("1. Create a service account in Google Cloud Console", result)
 
 
 # ---------------------------------------------------------------------------

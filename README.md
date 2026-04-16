@@ -112,7 +112,7 @@ Set `GSC_SKIP_OAUTH` to "true", "1", or "yes" to skip OAuth authentication and u
 8. For application type, select "Desktop app"
 9. Give your OAuth client a name and click "Create"
 10. Download the client secrets JSON file (it will be named something like `client_secrets.json`)
-11. Place this file in the same directory as the script or set the `GSC_OAUTH_CLIENT_SECRETS_FILE` environment variable to point to its location
+11. Either set the `GSC_OAUTH_CLIENT_SECRETS_FILE` environment variable to the **absolute path** of this file (required if installing via `uvx`), **or**, if you cloned the repo manually, place the file in the same directory as `gsc_server.py`
 
 When you run the tool for the first time with OAuth authentication, it will open a browser window asking you to sign in to your Google account and authorize the application. After authorization, the tool will save the token for future use.
 
@@ -131,7 +131,7 @@ This method uses a service account, which is useful for automated scripts or whe
 7. Click on the newly created service account
 8. Go to the "Keys" tab and click "Add Key" > "Create new key"
 9. Select JSON format and click "Create"
-10. Download the key file and save it as `service_account_credentials.json` in the same directory as the script or set the `GSC_CREDENTIALS_PATH` environment variable to point to its location
+10. Download the key file. Either set the `GSC_CREDENTIALS_PATH` environment variable to the **absolute path** of this file (required if installing via `uvx`), **or**, if you cloned the repo manually, save it as `service_account_credentials.json` in the same directory as `gsc_server.py`
 11. Add your service account email address to appropriate Search Console properties
 
 **🎬 Watch this beginner-friendly tutorial on Youtube:**
@@ -175,6 +175,10 @@ If you have [uv](https://docs.astral.sh/uv/) installed, you can skip cloning ent
 ```
 
 `uvx` installs the server in an isolated environment automatically and keeps it up to date. No virtual environment management needed. Skip to [Step 5](#5-connect-your-ai-client-to-google-search-console) if using this option.
+
+> **Important for `uvx` users:** You **must** set `GSC_CREDENTIALS_PATH` (or `GSC_OAUTH_CLIENT_SECRETS_FILE`) to an **absolute path**. Simply placing credential files in your project folder is **not** sufficient — `uvx` runs the code from an internal cache directory you cannot reach, so any "same directory as the script" instructions elsewhere in this README apply only to the clone-install path (Option B).
+>
+> **PyPI package name:** The official package is [`mcp-search-console`](https://pypi.org/project/mcp-search-console/). A third-party package named `mcp-gsc` exists on PyPI but is not maintained by this project — make sure you install `mcp-search-console`.
 
 **Option B — Clone manually (more control)**
 
@@ -306,8 +310,8 @@ The configuration below uses Claude Desktop as an example. For other clients (Cu
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `GSC_OAUTH_CLIENT_SECRETS_FILE` | OAuth only | `client_secrets.json` (same folder) | Path to your OAuth client secrets JSON file |
-| `GSC_CREDENTIALS_PATH` | Service account only | `service_account_credentials.json` (same folder) | Path to your service account JSON key file |
+| `GSC_OAUTH_CLIENT_SECRETS_FILE` | OAuth only | `client_secrets.json` next to `gsc_server.py` (clone install only) | Absolute path to your OAuth client secrets JSON file. **Required** when installing via `uvx`. |
+| `GSC_CREDENTIALS_PATH` | Service account only | `service_account_credentials.json` next to `gsc_server.py` (clone install only) | Absolute path to your service account JSON key file. **Required** when installing via `uvx`. |
 | `GSC_SKIP_OAUTH` | No | `false` | Set to `"true"` to force service account auth and skip OAuth |
 | `GSC_DATA_STATE` | No | `"all"` | `"all"` returns fresh data matching the GSC dashboard. `"final"` returns only confirmed data (2–3 day lag). |
 
@@ -408,6 +412,17 @@ If you encounter errors related to Python not being found, you can create an ali
    ```
 
 This creates a symbolic link so that when applications call `python`, they'll actually use your `python3` installation.
+
+### "Service account credentials file not found" or "Authentication failed" (especially with `uvx`)
+
+If you installed via `uvx` and see an authentication error even though you placed your credentials JSON file in your cloned repo folder, this is the expected cause: `uvx` runs the code from an internal cache directory (`~/.cache/uv/archive-v0/...`), **not** from your project folder. The server can't find credential files by filename in the "script directory" because that directory is the uv cache.
+
+**Fix:** Set the credential path explicitly as an **absolute path** in your MCP client config:
+
+- For service accounts: `"GSC_CREDENTIALS_PATH": "/Users/you/creds/service_account_credentials.json"` (use `C:\\Users\\you\\...` on Windows)
+- For OAuth: `"GSC_OAUTH_CLIENT_SECRETS_FILE": "/Users/you/creds/client_secrets.json"`
+
+If you set one of these env vars but still get an error, the server will now tell you the exact resolved path it tried — double-check for typos and confirm the file exists at that path. `~/` and `$HOME` are expanded, so `~/creds.json` also works.
 
 ### AI Client Configuration Issues
 

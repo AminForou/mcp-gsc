@@ -25,10 +25,21 @@ from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP("gsc-server")
 
+def _expand_path(path: Optional[str]) -> Optional[str]:
+    """Expand ``~`` and environment variables in a path, returning None for empty input.
+
+    This lets users write ``GSC_CREDENTIALS_PATH=~/creds.json`` or
+    ``GSC_CREDENTIALS_PATH=$HOME/creds.json`` without hitting silent lookup failures.
+    """
+    if not path:
+        return None
+    return os.path.expandvars(os.path.expanduser(path))
+
+
 # Path to your service account JSON or user credentials JSON
 # First check if GSC_CREDENTIALS_PATH environment variable is set
 # Then try looking in the script directory and current working directory as fallbacks
-GSC_CREDENTIALS_PATH = os.environ.get("GSC_CREDENTIALS_PATH")
+GSC_CREDENTIALS_PATH = _expand_path(os.environ.get("GSC_CREDENTIALS_PATH"))
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 POSSIBLE_CREDENTIAL_PATHS = [
     GSC_CREDENTIALS_PATH,  # First try the environment variable if set
@@ -38,7 +49,11 @@ POSSIBLE_CREDENTIAL_PATHS = [
 ]
 
 # OAuth client secrets file path
-OAUTH_CLIENT_SECRETS_FILE = os.environ.get("GSC_OAUTH_CLIENT_SECRETS_FILE")
+OAUTH_CLIENT_SECRETS_FILE = _expand_path(os.environ.get("GSC_OAUTH_CLIENT_SECRETS_FILE"))
+# Track whether the user explicitly set the env var (vs. using the SCRIPT_DIR fallback).
+# Needed so get_gsc_service() can fail-fast when the explicit path is wrong, while
+# leaving the fallback behavior unchanged for clone-install users.
+GSC_OAUTH_CLIENT_SECRETS_FILE_EXPLICIT = OAUTH_CLIENT_SECRETS_FILE is not None
 if not OAUTH_CLIENT_SECRETS_FILE:
     OAUTH_CLIENT_SECRETS_FILE = os.path.join(SCRIPT_DIR, "client_secrets.json")
 
@@ -80,6 +95,30 @@ def get_gsc_service():
     Returns an authorized Search Console service object.
     First tries OAuth authentication, then falls back to service account.
     """
+    # Fail-fast if credential env vars are set but point to files that don't exist.
+    # Without this, a typo'd or uvx-incompatible path would silently fall through to
+    # SCRIPT_DIR/cwd fallbacks (which don't work under uvx) and emit a misleading
+    # "file not found" error with no mention of the env var the user actually set.
+    # We rely on the module-level captured values (GSC_CREDENTIALS_PATH,
+    # GSC_OAUTH_CLIENT_SECRETS_FILE_EXPLICIT) rather than re-reading os.environ at
+    # call time, because the env var may have been cleared by the caller after module
+    # import (e.g. by test frameworks or MCP hosts that scope env vars narrowly).
+    if GSC_CREDENTIALS_PATH and not os.path.exists(GSC_CREDENTIALS_PATH):
+        raise FileNotFoundError(
+            f"GSC_CREDENTIALS_PATH is set to {GSC_CREDENTIALS_PATH!r} but the file "
+            f"does not exist. "
+            f"If running via uvx, this MUST be an absolute path to your service account "
+            f"credentials JSON file — placing the file in your project folder is not "
+            f"sufficient because uvx runs the code from an internal cache directory."
+        )
+    if GSC_OAUTH_CLIENT_SECRETS_FILE_EXPLICIT and not os.path.exists(OAUTH_CLIENT_SECRETS_FILE):
+        raise FileNotFoundError(
+            f"GSC_OAUTH_CLIENT_SECRETS_FILE is set to {OAUTH_CLIENT_SECRETS_FILE!r} "
+            f"but the file does not exist. "
+            f"If running via uvx, this MUST be an absolute path to your OAuth "
+            f"client_secrets.json file."
+        )
+
     # Try OAuth authentication first if not skipped
     if not SKIP_OAUTH:
         try:
@@ -100,12 +139,22 @@ def get_gsc_service():
             except Exception as e:
                 continue  # Try the next path if this one fails
     
-    # If we get here, none of the authentication methods worked
+    # If we get here, none of the authentication methods worked.
+    # Note: uvx users can't place files "in the script directory" because uvx runs
+    # the code from ~/.cache/uv/archive-v0/<hash>/lib/python*/site-packages/ — an
+    # internal cache they cannot reach. They must use env vars with absolute paths.
     raise FileNotFoundError(
         f"Authentication failed. Please either:\n"
-        f"1. Set up OAuth by placing a client_secrets.json file in the script directory, or\n"
-        f"2. Set the GSC_CREDENTIALS_PATH environment variable or place a service account credentials file in one of these locations: "
-        f"{', '.join([p for p in POSSIBLE_CREDENTIAL_PATHS[1:] if p])}"
+        f"1. Set up OAuth by setting GSC_OAUTH_CLIENT_SECRETS_FILE to an absolute path, "
+        f"or (for clone installs) placing a client_secrets.json file in the script "
+        f"directory, or\n"
+        f"2. Set GSC_CREDENTIALS_PATH to an absolute path, or (for clone installs) "
+        f"place a service account credentials file in one of these locations: "
+        f"{', '.join([p for p in POSSIBLE_CREDENTIAL_PATHS[1:] if p])}\n"
+        f"\n"
+        f"If you installed via uvx, the 'script directory' is an internal uv cache "
+        f"that you cannot access — you MUST use the environment variables with "
+        f"absolute paths."
     )
 
 def get_gsc_service_oauth():
@@ -228,14 +277,7 @@ async def list_properties() -> str:
             ],
         })
     except FileNotFoundError as e:
-        return (
-            "Error: Service account credentials file not found.\n\n"
-            "To access Google Search Console, please:\n"
-            "1. Create a service account in Google Cloud Console\n"
-            "2. Download the JSON credentials file\n"
-            "3. Save it as 'service_account_credentials.json' in the same directory as this script\n"
-            "4. Share your GSC properties with the service account email"
-        )
+        return f"Error: {str(e)}"
     except Exception as e:
         return f"Error retrieving properties: {str(e)}"
 
