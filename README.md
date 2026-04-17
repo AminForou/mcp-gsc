@@ -1,16 +1,306 @@
-# Google Search Console MCP server for SEOs
+# Google Search Console MCP Server for SEOs
 
-> **April 2026 (v0.3.0):** Coming to the **Cursor Marketplace** — one-click install with bundled SEO skills. Also: token storage moved to user config dir (survives `uvx` upgrades), all data tools now return structured JSON, and 39 new unit tests. See the [Changelog](#changelog) for details.
+A Model Context Protocol (MCP) server that connects [Google Search Console](https://search.google.com/search-console/about) (GSC) to AI assistants, allowing you to analyze your SEO data through natural language conversations. Works with **Claude Desktop**, **Cursor**, **Codex CLI**, **Gemini CLI**, **Antigravity**, and any other MCP-compatible client.
 
-A Model Context Protocol (MCP) server that connects [Google Search Console](https://search.google.com/search-console/about) (GSC) to AI assistants, allowing you to analyze your SEO data through natural language conversations. Works with **Claude**, **Cursor**, **Codex**, **Gemini CLI**, **Antigravity**, and any other MCP-compatible client. This integration gives you access to property information, search analytics, URL inspection, and sitemap management—all through simple chat.
+---
+
+## What's New
+
+### [0.3.2] — April 2026
+- **OAuth browser flow fixed for uvx** — removed the `isatty` block that prevented the browser login window from opening when running as an MCP subprocess on macOS. OAuth now works out of the box with `uvx`, no manual terminal run needed.
+- **`get_capabilities` tool added** — call this to get a full list of available tools and current auth status in one shot. Useful when your AI assistant isn't sure what tools are available.
+- **Better auth error messages** — all tools now tell you exactly what to do when credentials are missing or expired.
+
+---
+
+## What Can This Do?
+
+**Property Management**
+- See all your GSC properties in one place
+- Get verification details and ownership information
+- Add or remove properties from your account
+
+**Search Analytics & Reporting**
+- Discover which queries bring visitors to your site
+- Track impressions, clicks, and click-through rates
+- Analyze performance trends and compare time periods
+- Visualize data with charts created by your AI assistant
+
+**URL Inspection & Indexing**
+- Check if specific pages have indexing problems
+- See when Google last crawled your pages
+- Inspect multiple URLs at once to identify patterns
+
+**Sitemap Management**
+- View all sitemaps and their status
+- Submit new sitemaps
+- Check for errors or warnings
+
+---
+
+## Available Tools
+
+| Tool | What It Does | What You Need to Provide |
+|------|-------------|--------------------------|
+| `get_capabilities` | Lists all tools and shows auth status — call this first if unsure | Nothing |
+| `list_properties` | Shows all your GSC properties | Nothing |
+| `get_site_details` | Details about a specific site | Site URL |
+| `get_search_analytics` | Top queries and pages with clicks, impressions, CTR, position | Site URL, time period |
+| `get_performance_overview` | Summary of site performance | Site URL, time period |
+| `compare_search_periods` | Compare performance between two time periods | Site URL, two date ranges |
+| `get_search_by_page_query` | Search terms driving traffic to a specific page | Site URL, page URL |
+| `get_advanced_search_analytics` | Analytics with filters by country, device, query, page | Site URL |
+| `inspect_url_enhanced` | Detailed crawl/index status for a URL | Site URL, page URL |
+| `batch_url_inspection` | Inspect up to 10 URLs at once | Site URL, list of URLs |
+| `check_indexing_issues` | Check multiple URLs for indexing problems | Site URL, list of URLs |
+| `get_sitemaps` | Lists all sitemaps for a site | Site URL |
+| `list_sitemaps_enhanced` | Detailed sitemap info including errors and warnings | Site URL |
+| `manage_sitemaps` | Submit or delete sitemaps | Site URL, action |
+| `reauthenticate` | Re-run the OAuth browser login (switch accounts) | Nothing |
+
+*Ask your AI assistant to "call get_capabilities" for the full list of all 20 tools.*
+
+---
+
+## Getting Started
+
+### Step 1 — Set Up Google API Credentials
+
+You need credentials before configuring any client. Pick one method:
+
+#### Option A — OAuth (Recommended — uses your own Google account)
+
+1. Go to [Google Cloud Console](https://console.cloud.google.com/) and create or select a project
+2. [Enable the Search Console API](https://console.cloud.google.com/apis/library/searchconsole.googleapis.com)
+3. Go to [Credentials](https://console.cloud.google.com/apis/credentials) → Create Credentials → **OAuth client ID**
+4. Configure the OAuth consent screen, select **Desktop app**, click Create
+5. Download the JSON file — save it somewhere permanent (e.g. `~/Documents/client_secrets.json`)
+
+On first use, a browser window will open asking you to sign in to your Google account. After that, the token is saved and no browser interaction is needed again.
+
+#### Option B — Service Account (For automation or team use)
+
+1. Go to [Google Cloud Console](https://console.cloud.google.com/) and create or select a project
+2. [Enable the Search Console API](https://console.cloud.google.com/apis/library/searchconsole.googleapis.com)
+3. Go to [Credentials](https://console.cloud.google.com/apis/credentials) → Create Credentials → **Service Account**
+4. Go to the Keys tab → Add Key → Create new key → JSON → Download
+5. Save the file somewhere permanent (e.g. `~/Documents/service_account.json`)
+6. Add the service account email to your GSC property: Search Console → Settings → Users and permissions → Add user → Full access
+
+**Watch the beginner-friendly setup tutorial:**
+
+<div align="center">
+  <a href="https://youtu.be/PCWsK5BgSd0">
+    <img src="https://i.ytimg.com/vi/PCWsK5BgSd0/maxresdefault.jpg" alt="Google Search Console API Setup Tutorial" width="600" style="margin: 20px 0; border-radius: 8px;">
+  </a>
+</div>
+
+---
+
+### Step 2 — Installation
+
+#### Option A — uvx (Recommended)
+
+No cloning, no Python installation, no virtual environments. `uvx` downloads and runs the server automatically and keeps it up to date.
+
+**Install uv** — open Terminal and run all three commands in order:
+
+```bash
+# 1. Download and install
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# 2. Activate in the current Terminal session
+source $HOME/.local/bin/env
+
+# 3. Make it permanent for all future sessions
+echo 'source $HOME/.local/bin/env' >> ~/.zshrc
+```
+
+Verify:
+```bash
+uv --version
+```
+
+> **Why all three commands?** The installer puts `uv` in `~/.local/bin`, but your already-open Terminal session doesn't know about that folder yet. Step 2 activates it immediately. Step 3 ensures every future Terminal window has it automatically.
+
+Now configure your AI client:
+
+---
+
+**Claude Desktop**
+
+Config file: `~/Library/Application Support/Claude/claude_desktop_config.json`
+
+OAuth:
+```json
+{
+  "mcpServers": {
+    "gscServer": {
+      "command": "/FULL/PATH/TO/uvx",
+      "args": ["mcp-search-console"],
+      "env": {
+        "GSC_OAUTH_CLIENT_SECRETS_FILE": "/full/path/to/client_secrets.json"
+      }
+    }
+  }
+}
+```
+
+Service Account:
+```json
+{
+  "mcpServers": {
+    "gscServer": {
+      "command": "/FULL/PATH/TO/uvx",
+      "args": ["mcp-search-console"],
+      "env": {
+        "GSC_CREDENTIALS_PATH": "/full/path/to/service_account.json",
+        "GSC_SKIP_OAUTH": "true"
+      }
+    }
+  }
+}
+```
+
+---
+
+**Cursor**
+
+Config file: `~/.cursor/mcp.json`
+
+OAuth:
+```json
+{
+  "mcpServers": {
+    "gscServer": {
+      "command": "/FULL/PATH/TO/uvx",
+      "args": ["mcp-search-console"],
+      "env": {
+        "GSC_OAUTH_CLIENT_SECRETS_FILE": "/full/path/to/client_secrets.json"
+      }
+    }
+  }
+}
+```
+
+---
+
+**Codex CLI**
+
+Config file: `~/.codex/config.toml`
+
+OAuth:
+```toml
+[mcp_servers.gscServer]
+command = "/FULL/PATH/TO/uvx"
+args = ["mcp-search-console"]
+enabled = true
+env = { GSC_OAUTH_CLIENT_SECRETS_FILE = "/full/path/to/client_secrets.json" }
+```
+
+Service Account:
+```toml
+[mcp_servers.gscServer]
+command = "/FULL/PATH/TO/uvx"
+args = ["mcp-search-console"]
+enabled = true
+env = { GSC_CREDENTIALS_PATH = "/full/path/to/service_account.json", GSC_SKIP_OAUTH = "true" }
+```
+
+---
+
+> **Finding your uvx path:** Run `which uvx` in Terminal after installing uv. On macOS it is typically `/Users/YOUR_NAME/.local/bin/uvx`. Replace `/FULL/PATH/TO/uvx` in the configs above with that path.
+>
+> **Why the full path?** GUI apps like Claude Desktop and Cursor launch without reading your shell config (`~/.zshrc`), so they don't know about `~/.local/bin`. Using the full path guarantees it works regardless of how the app is launched. If you see a `spawn uvx ENOENT` error, this is the fix.
+
+After saving the config, **fully quit the app (`Cmd+Q`) and reopen it**.
+
+For OAuth: on first use, a browser window will open automatically for login. After that, the token is cached and you won't be asked again.
+
+---
+
+#### Option B — Clone (Advanced)
+
+Use this if you want to modify the code or run a specific local version. This method uses the video tutorial above for the credential setup steps.
+
+**Clone the repo:**
+```bash
+git clone https://github.com/AminForou/mcp-gsc.git
+cd mcp-gsc
+```
+
+Or download the ZIP from the green Code button at the top of this page and unzip it.
+
+**Set up the environment:**
+```bash
+uv venv .venv
+uv pip install -r requirements.txt
+```
+
+**Configure your AI client** (Claude Desktop example):
+
+OAuth:
+```json
+{
+  "mcpServers": {
+    "gscServer": {
+      "command": "/full/path/to/mcp-gsc/.venv/bin/python",
+      "args": ["/full/path/to/mcp-gsc/gsc_server.py"],
+      "env": {
+        "GSC_OAUTH_CLIENT_SECRETS_FILE": "/full/path/to/client_secrets.json"
+      }
+    }
+  }
+}
+```
+
+Service Account:
+```json
+{
+  "mcpServers": {
+    "gscServer": {
+      "command": "/full/path/to/mcp-gsc/.venv/bin/python",
+      "args": ["/full/path/to/mcp-gsc/gsc_server.py"],
+      "env": {
+        "GSC_CREDENTIALS_PATH": "/full/path/to/service_account.json",
+        "GSC_SKIP_OAUTH": "true"
+      }
+    }
+  }
+}
+```
+
+Mac path examples:
+- Python: `/Users/yourname/Documents/mcp-gsc/.venv/bin/python`
+- Script: `/Users/yourname/Documents/mcp-gsc/gsc_server.py`
+
+---
+
+### Step 3 — Test
+
+Ask your AI assistant: **"List my GSC properties"**
+
+If you see your properties — it's working. If not, ask: **"Call get_capabilities"** to see auth status and diagnose the issue.
+
+---
+
+## Environment Variables Reference
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `GSC_OAUTH_CLIENT_SECRETS_FILE` | OAuth only | — | Absolute path to your OAuth client secrets JSON. Always required when using `uvx`. |
+| `GSC_CREDENTIALS_PATH` | Service account only | — | Absolute path to your service account JSON key. Always required when using `uvx`. |
+| `GSC_SKIP_OAUTH` | No | `false` | Set to `"true"` to force service account auth and skip OAuth entirely |
+| `GSC_DATA_STATE` | No | `"all"` | `"all"` matches the GSC dashboard. `"final"` returns only confirmed data (2–3 day lag). |
+| `GSC_ALLOW_DESTRUCTIVE` | No | `false` | Set to `"true"` to enable add/delete site and delete sitemap tools |
 
 ---
 
 ## Cursor Marketplace
 
-> **One-click install available** — search for `mcp-search-console` in the Cursor Marketplace.
+One-click install available — search for `mcp-search-console` in the Cursor Marketplace.
 
-After installing, configure your credentials (see [Getting Started](#getting-started-no-coding-experience-required) below) then use the bundled skills directly in Cursor Agent chat:
+After installing, configure your credentials (see Step 1 above) then use the bundled skills directly in Cursor Agent chat:
 
 | Skill | How to invoke | What it does |
 |---|---|---|
@@ -19,484 +309,101 @@ After installing, configure your credentials (see [Getting Started](#getting-sta
 | `indexing-audit` | *"Audit indexing for my top pages"* | Batch-inspects top 20 pages and returns a prioritized fix list |
 | `content-opportunities` | *"Find content opportunities for example.com"* | Surfaces position-11-20 queries with high impressions and low CTR |
 
-### Required environment variables (set in Cursor MCP settings after install)
-
-| Variable | Required | Description |
-|---|---|---|
-| `GSC_OAUTH_CLIENT_SECRETS_FILE` | One of these two | Path to your OAuth `client_secrets.json` |
-| `GSC_CREDENTIALS_PATH` | One of these two | Path to your service account credentials JSON |
-| `GSC_DATA_STATE` | Optional | `all` (default, matches GSC dashboard) or `final` (2–3 day lag) |
-| `GSC_ALLOW_DESTRUCTIVE` | Optional | Set to `true` to enable add/delete site and delete sitemap tools |
-
-### First-time authentication (OAuth users only)
-
-After installing, ask your AI assistant: *"Authenticate my Google Search Console"* — it will run the `reauthenticate` tool which opens a browser window once to authorize access. Subsequent uses are token-based and require no interaction.
-
 ---
 
-## What Can This Tool Do For SEO Professionals?
-
-1. **Property Management**  
-   - See all your GSC properties in one place
-   - Get verification details and basic site information
-   - Add new properties to your account
-   - Remove properties from your account
-
-2. **Search Analytics & Reporting**  
-   - Discover which search queries bring visitors to your site
-   - Track impressions, clicks, and click-through rates
-   - Analyze performance trends over time
-   - Compare different time periods to spot changes
-   - **Visualize your data** with charts and graphs created by Claude
-
-3. **URL Inspection & Indexing**  
-   - Check if specific pages have indexing problems
-   - See when Google last crawled your pages
-   - Inspect multiple URLs at once to identify patterns
-   - Get actionable insights on how to improve indexing
-
-4. **Sitemap Management**  
-   - View all your sitemaps and their status
-   - Submit new sitemaps directly through Claude
-   - Check for errors or warnings in your sitemaps
-   - Monitor sitemap processing status
-
----
-
-## Available Tools
-
-Here's what you can ask your AI assistant to do once you've set up this integration:
-
-| **What You Can Ask For**        | **What It Does**                                            | **What You'll Need to Provide**                                 |
-|---------------------------------|-------------------------------------------------------------|----------------------------------------------------------------|
-| `list_properties`               | Shows all your GSC properties                               | Nothing - just ask!                                             |
-| `get_site_details`              | Shows details about a specific site                         | Your website URL                                                |
-| `add_site`                      | Adds a new site to your GSC properties                      | Your website URL                                                |
-| `delete_site`                   | Removes a site from your GSC properties                     | Your website URL                                                |
-| `get_search_analytics`          | Shows top queries and pages with metrics                    | Your website URL, time period, and optional `row_limit` (default 20, max 500) |
-| `get_performance_overview`      | Gives a summary of site performance                         | Your website URL and time period                                |
-| `check_indexing_issues`         | Checks if pages have indexing problems                      | Your website URL and list of pages to check                     |
-| `inspect_url_enhanced`          | Detailed inspection of a specific URL                       | Your website URL and the page to inspect                        |
-| `get_sitemaps`                  | Lists all sitemaps for your site                            | Your website URL                                                |
-| `submit_sitemap`                | Submits a new sitemap to Google                             | Your website URL and sitemap URL                                |
-
-*For a complete list of all 20 available tools and their detailed descriptions, ask your AI assistant to "list tools" after setup.*
-
----
-
-## Getting Started (No Coding Experience Required!)
-
-### 1. Set Up Google Search Console API Access
-
-Before using this tool, you'll need to create API credentials that allow your AI assistant to access your GSC data:
-
-#### Authentication Options
-
-The tool supports two authentication methods:
-
-##### 1. OAuth Authentication (Recommended)
-
-This method allows you to authenticate with your own Google account, which is often more convenient than using a service account. It will have access to the same resources you normally do.
-
-Set `GSC_SKIP_OAUTH` to "true", "1", or "yes" to skip OAuth authentication and use only service account authentication
-
-###### Setup Instructions:
-
-1. Go to the [Google Cloud Console](https://console.cloud.google.com/) and create a Google Cloud account if you don't have one
-2. Create a new project or select an existing one
-3. [Enable the Search Console API](https://console.cloud.google.com/apis/library/searchconsole.googleapis.com) for your project
-4. [Add scope](https://console.cloud.google.com/auth/scopes) `https://www.googleapis.com/auth/webmasters` to your project
-5. Go to the ["Credentials" page](https://console.cloud.google.com/apis/credentials)
-6. Click "Create Credentials" and select "OAuth client ID"
-7. Configure the OAuth consent screen
-8. For application type, select "Desktop app"
-9. Give your OAuth client a name and click "Create"
-10. Download the client secrets JSON file (it will be named something like `client_secrets.json`)
-11. Either set the `GSC_OAUTH_CLIENT_SECRETS_FILE` environment variable to the **absolute path** of this file (required if installing via `uvx`), **or**, if you cloned the repo manually, place the file in the same directory as `gsc_server.py`
-
-When you run the tool for the first time with OAuth authentication, it will open a browser window asking you to sign in to your Google account and authorize the application. After authorization, the tool will save the token for future use.
-
-##### 2. Service Account Authentication
-
-This method uses a service account, which is useful for automated scripts or when you don't want to use your personal Google account. This requires adding the service account as a user in Google Search Console.
-
-###### Setup Instructions:
-
-1. Go to the [Google Cloud Console](https://console.cloud.google.com/) and create a Google Cloud account if you don't have one
-2. Create a new project or select an existing one
-3. [Enable the Search Console API](https://console.cloud.google.com/apis/library/searchconsole.googleapis.com) for your project
-4. Go to the ["Credentials" page](https://console.cloud.google.com/apis/credentials)
-5. Click "Create Credentials" and select "Service Account"
-6. Fill in the service account details and click "Create"
-7. Click on the newly created service account
-8. Go to the "Keys" tab and click "Add Key" > "Create new key"
-9. Select JSON format and click "Create"
-10. Download the key file. Either set the `GSC_CREDENTIALS_PATH` environment variable to the **absolute path** of this file (required if installing via `uvx`), **or**, if you cloned the repo manually, save it as `service_account_credentials.json` in the same directory as `gsc_server.py`
-11. Add your service account email address to appropriate Search Console properties
-
-**🎬 Watch this beginner-friendly tutorial on Youtube:**
-
-<div align="center">
-  <a href="https://youtu.be/PCWsK5BgSd0">
-    <img src="https://i.ytimg.com/vi/PCWsK5BgSd0/maxresdefault.jpg" alt="Google Search Console API Setup Tutorial" width="600" style="margin: 20px 0; border-radius: 8px;">
-  </a>
-</div>
-
-*Click the image above to watch the step-by-step video tutorial*
-
-### 2. Install Required Software
-
-You'll need to install these tools on your computer:
-
-- [Python](https://www.python.org/downloads/) (version 3.11 or newer) - This runs the MCP server
-- An MCP-compatible AI client — [Claude Desktop](https://claude.ai/download), [Cursor](https://www.cursor.com/), [Codex CLI](https://github.com/openai/codex), [Gemini CLI](https://github.com/google-gemini/gemini-cli), or [Antigravity](https://antigravity.ai/) are all supported
-
-Make sure Python is properly installed and available in your system path before proceeding.
-
-### 3. Install the MCP Server
-
-**Option A — `uvx` (simplest, no clone needed)**
-
-If you have [uv](https://docs.astral.sh/uv/) installed, you can skip cloning entirely. Use this config directly in step 5:
-
-```json
-{
-  "mcpServers": {
-    "gscServer": {
-      "command": "uvx",
-      "args": ["mcp-search-console"],
-      "env": {
-        "GSC_CREDENTIALS_PATH": "/FULL/PATH/TO/service_account_credentials.json",
-        "GSC_SKIP_OAUTH": "true"
-      }
-    }
-  }
-}
-```
-
-`uvx` installs the server in an isolated environment automatically and keeps it up to date. No virtual environment management needed. Skip to [Step 5](#5-connect-your-ai-client-to-google-search-console) if using this option.
-
-> **Important for `uvx` users:** You **must** set `GSC_CREDENTIALS_PATH` (or `GSC_OAUTH_CLIENT_SECRETS_FILE`) to an **absolute path**. Simply placing credential files in your project folder is **not** sufficient — `uvx` runs the code from an internal cache directory you cannot reach, so any "same directory as the script" instructions elsewhere in this README apply only to the clone-install path (Option B).
->
-> **PyPI package name:** The official package is [`mcp-search-console`](https://pypi.org/project/mcp-search-console/). A third-party package named `mcp-gsc` exists on PyPI but is not maintained by this project — make sure you install `mcp-search-console`.
-
-**Option B — Clone manually (more control)**
-
-Download this tool to your computer. The easiest way is:
-
-1. Click the green "Code" button at the top of this page
-2. Select "Download ZIP"
-3. Unzip the downloaded file to a location you can easily find (like your Documents folder)
-
-Alternatively, if you're familiar with Git:
-
-```bash
-git clone https://github.com/AminForou/mcp-gsc.git
-```
-
-### 4. Install Required Components (Option B only)
-
-Open your computer's Terminal (Mac) or Command Prompt (Windows):
-
-1. Navigate to the folder where you unzipped the files:
-   ```bash
-   # Example (replace with your actual path):
-   cd ~/Documents/mcp-gsc-main
-   ```
-
-2. Create a virtual environment (this keeps the project dependencies isolated):
-   ```bash
-   # Using uv (recommended):
-   uv venv .venv
-   
-   # If uv is not installed, install it first:
-   pip install uv
-   # Then create the virtual environment:
-   uv venv .venv
-
-   # OR using standard Python:
-   python -m venv .venv
-   ```
-
-   **Note:** If you get a "pip not found" error when trying to install uv, see the "If you get 'pip not found' error" section below.
-
-3. Activate the virtual environment:
-   ```bash
-   # On Mac/Linux:
-   source .venv/bin/activate
-   
-   # On Windows:
-   .venv\Scripts\activate
-   ```
-
-4. Install the required dependencies:
-   ```bash
-   # Using uv:
-   uv pip install -r requirements.txt
-
-   # OR using standard pip:
-   pip install -r requirements.txt
-   ```
-
-   **If you get "pip not found" error:**
-   ```bash
-   # First ensure pip is installed and updated:
-   python3 -m ensurepip --upgrade
-   python3 -m pip install --upgrade pip
-   
-   # Then try installing the requirements again:
-   python3 -m pip install -r requirements.txt
-   
-   # Or to install uv:
-   python3 -m pip install uv
-   ```
-
-When you see `(.venv)` at the beginning of your command prompt, it means the virtual environment is active and the dependencies will be installed there without affecting your system Python installation.
-
-### 5. Connect Your AI Client to Google Search Console
-
-The configuration below uses Claude Desktop as an example. For other clients (Cursor, Codex, Gemini CLI, Antigravity), the JSON structure is the same — check your client's documentation for where the config file lives.
-
-1. Download and install [Claude Desktop](https://claude.ai/download) if you haven't already
-2. Make sure you have your Google credentials file saved somewhere on your computer
-3. Open your computer's Terminal (Mac) or Command Prompt (Windows) and type:
-
-```bash
-   # For Mac users:
-   nano ~/Library/Application\ Support/Claude/claude_desktop_config.json
-   
-   # For Windows users:
-   notepad %APPDATA%\Claude\claude_desktop_config.json
-   ```
-
-4. Add the following configuration text (this tells your AI client how to connect to GSC):
-
-#### OAuth authentication (using your own account)
-
-   ```json
-   {
-     "mcpServers": {
-       "gscServer": {
-         "command": "/FULL/PATH/TO/-main/.venv/bin/python",
-         "args": ["/FULL/PATH/TO/mcp-gsc-main/gsc_server.py"],
-         "env": {
-           "GSC_OAUTH_CLIENT_SECRETS_FILE": "/FULL/PATH/TO/client_secrets.json",
-           "GSC_DATA_STATE": "all"
-         }
-       }
-     }
-   }
-   ```
-
-#### Service account authentication
-
-   ```json
-   {
-     "mcpServers": {
-       "gscServer": {
-         "command": "/FULL/PATH/TO/-main/.venv/bin/python",
-         "args": ["/FULL/PATH/TO/mcp-gsc-main/gsc_server.py"],
-         "env": {
-           "GSC_CREDENTIALS_PATH": "/FULL/PATH/TO/service_account_credentials.json",
-           "GSC_SKIP_OAUTH": "true",
-           "GSC_DATA_STATE": "all"
-         }
-       }
-     }
-   }
-   ```
-
-#### Environment Variables Reference
-
-| Variable | Required | Default | Description |
-|---|---|---|---|
-| `GSC_OAUTH_CLIENT_SECRETS_FILE` | OAuth only | `client_secrets.json` next to `gsc_server.py` (clone install only) | Absolute path to your OAuth client secrets JSON file. **Required** when installing via `uvx`. |
-| `GSC_CREDENTIALS_PATH` | Service account only | `service_account_credentials.json` next to `gsc_server.py` (clone install only) | Absolute path to your service account JSON key file. **Required** when installing via `uvx`. |
-| `GSC_SKIP_OAUTH` | No | `false` | Set to `"true"` to force service account auth and skip OAuth |
-| `GSC_DATA_STATE` | No | `"all"` | `"all"` returns fresh data matching the GSC dashboard. `"final"` returns only confirmed data (2–3 day lag). |
-
-   **Important:** Replace all paths with the actual locations on your computer:
-   
-   - The first path should point to the Python executable inside your virtual environment
-   - The second path should point to the `gsc_server.py` file inside the folder you unzipped
-   - The third path should point to your Google service account credentials JSON file
-   
-   Examples:
-   - Mac: 
-     - Python path: `/Users/yourname/Documents/mcp-gsc/.venv/bin/python`
-     - Script path: `/Users/yourname/Documents/mcp-gsc/gsc_server.py`
-   - Windows: 
-     - Python path: `C:\\Users\\yourname\\Documents\\mcp-gsc\\.venv\\Scripts\\python.exe`
-     - Script path: `C:\\Users\\yourname\\Documents\\mcp-gsc\\gsc_server.py`
-
-5. Save the file:
-   - Mac: Press Ctrl+O, then Enter, then Ctrl+X to exit
-   - Windows: Click File > Save, then close Notepad
-
-6. Restart your AI client
-7. When it opens, you should now see GSC tools available in the tools section
-
-### 6. Start Analyzing Your SEO Data!
-
-Now you can ask your AI assistant questions about your GSC data! It can not only retrieve the data but also analyze it, explain trends, and create visualizations to help you understand your SEO performance better.
-
-Here are some powerful prompts you can use with each tool:
-
-| **Tool Name**                   | **Sample Prompt**                                                                                |
-|---------------------------------|--------------------------------------------------------------------------------------------------|
-| `list_properties`               | "List all my GSC properties and tell me which ones have the most pages indexed."                 |
-| `get_site_details`              | "Analyze the verification status of mywebsite.com and explain what the ownership details mean."  |
-| `add_site`                      | "Add my new website https://mywebsite.com to Search Console and verify its status."              |
-| `delete_site`                   | "Remove the old test site https://test.mywebsite.com from Search Console."                       |
-| `get_search_analytics`          | "Show me the top 20 search queries for mywebsite.com in the last 30 days, highlight any with CTR below 2%, and suggest title improvements." |
-| `get_performance_overview`      | "Create a visual performance overview of mywebsite.com for the last 28 days, identify any unusual drops or spikes, and explain possible causes." |
-| `check_indexing_issues`         | "Check these important pages for indexing issues and prioritize which ones need immediate attention: mywebsite.com/product, mywebsite.com/services, mywebsite.com/about" |
-| `inspect_url_enhanced`          | "Do a comprehensive inspection of mywebsite.com/landing-page and give me actionable recommendations to improve its indexing status." |
-| `batch_url_inspection`          | "Inspect my top 5 product pages, identify common crawling or indexing patterns, and suggest technical SEO improvements." |
-| `get_sitemaps`                  | "List all sitemaps for mywebsite.com, identify any with errors, and recommend next steps." |
-| `list_sitemaps_enhanced`        | "Analyze all my sitemaps for mywebsite.com, focusing on error patterns, and create a prioritized action plan." |
-| `submit_sitemap`                | "Submit my new product sitemap at https://mywebsite.com/product-sitemap.xml and explain how long it typically takes for Google to process it." |
-| `get_sitemap_details`           | "Check the status of my main sitemap at mywebsite.com/sitemap.xml and explain what the warnings mean for my SEO." |
-| `get_search_by_page_query`      | "What search terms are driving traffic to my blog post at mywebsite.com/blog/post-title? Identify opportunities to optimize for related keywords." |
-| `compare_search_periods`        | "Compare my site's performance between January and February. What queries improved the most, which declined, and what might explain these changes?" |
-| `get_advanced_search_analytics` | "Analyze queries with high impressions but positions below 10, filtered to mobile traffic in the US only. Use `filters` with country=usa and device=MOBILE." |
-
-You can also ask your AI assistant to combine multiple tools and analyze the results. For example:
-
-- "Find my top 20 landing pages by traffic, check their indexing status, and create a report highlighting any pages with both high traffic and indexing issues."
-
-- "Analyze my site's performance trend over the last 90 days, identify my fastest-growing queries, and check if the corresponding landing pages have any technical issues."
-
-- "Compare my desktop vs. mobile search performance, visualize the differences with charts, and recommend specific pages that need mobile optimization based on performance gaps."
-
-- "Identify queries where I'm ranking on page 2 (positions 11-20) that have high impressions but low CTR, then inspect the corresponding URLs and suggest title and meta description improvements."
-
-Your AI assistant will use the GSC tools to fetch the data, present it in an easy-to-understand format, create visualizations when helpful, and provide actionable insights based on the results.
-
----
-
-## Data Visualization Capabilities
-
-Your AI assistant can help you visualize your GSC data in various ways:
-
-- **Trend Charts**: See how metrics change over time
-- **Comparison Graphs**: Compare different time periods or dimensions
-- **Performance Distributions**: Understand how your content performs across positions
-- **Correlation Analysis**: Identify relationships between different metrics
-- **Heatmaps**: Visualize complex datasets with color-coded representations
-
-Simply ask your AI assistant to "visualize" or "create a chart" when analyzing your data, and it will generate appropriate visualizations to help you understand the information better.
+## Sample Prompts
+
+| Tool | Sample Prompt |
+|------|--------------|
+| `list_properties` | "List all my GSC properties and tell me which ones have the most pages indexed." |
+| `get_search_analytics` | "Show me the top 20 search queries for mywebsite.com in the last 30 days, highlight any with CTR below 2%, and suggest title improvements." |
+| `get_performance_overview` | "Create a visual performance overview of mywebsite.com for the last 28 days, identify any unusual drops or spikes, and explain possible causes." |
+| `check_indexing_issues` | "Check these pages for indexing issues: mywebsite.com/product, mywebsite.com/services, mywebsite.com/about" |
+| `inspect_url_enhanced` | "Do a comprehensive inspection of mywebsite.com/landing-page and give me actionable recommendations." |
+| `compare_search_periods` | "Compare my site's performance between January and February. What queries improved the most?" |
+| `get_advanced_search_analytics` | "Analyze queries with high impressions but positions below 10, filtered to mobile traffic in the US only." |
 
 ---
 
 ## Troubleshooting
 
-### Python Command Not Found
+### `spawn uvx ENOENT` or `command not found: uvx`
 
-On macOS, the default Python command is often `python3` rather than `python`, which can cause issues with some applications including Node.js integrations.
+Your AI client can't find `uvx`. Use the full path instead of just `uvx`:
 
-If you encounter errors related to Python not being found, you can create an alias:
+```bash
+# Find your full path:
+which uvx
+# Typically: /Users/YOUR_NAME/.local/bin/uvx
+```
 
-1. Create a Python alias (one-time setup):
-   ```bash
-   # For macOS users:
-   sudo ln -s $(which python3) /usr/local/bin/python
-   
-   # If that doesn't work, try finding your Python installation:
-   sudo ln -s /Library/Frameworks/Python.framework/Versions/3.11/bin/python3 /usr/local/bin/python
-   ```
+Replace `"command": "uvx"` with `"command": "/Users/YOUR_NAME/.local/bin/uvx"` in your config.
 
-2. Verify the alias works:
-   ```bash
-   python --version
-   ```
+### `uv --version` gives "command not found" right after installing
 
-This creates a symbolic link so that when applications call `python`, they'll actually use your `python3` installation.
+The installer updates `~/.local/bin` but your current Terminal session doesn't see it yet. Run:
 
-### "Service account credentials file not found" or "Authentication failed" (especially with `uvx`)
+```bash
+source $HOME/.local/bin/env
+```
 
-If you installed via `uvx` and see an authentication error even though you placed your credentials JSON file in your cloned repo folder, this is the expected cause: `uvx` runs the code from an internal cache directory (`~/.cache/uv/archive-v0/...`), **not** from your project folder. The server can't find credential files by filename in the "script directory" because that directory is the uv cache.
+Then add it permanently:
+```bash
+echo 'source $HOME/.local/bin/env' >> ~/.zshrc
+```
 
-**Fix:** Set the credential path explicitly as an **absolute path** in your MCP client config:
+### Authentication failed / credentials file not found
 
-- For service accounts: `"GSC_CREDENTIALS_PATH": "/Users/you/creds/service_account_credentials.json"` (use `C:\\Users\\you\\...` on Windows)
-- For OAuth: `"GSC_OAUTH_CLIENT_SECRETS_FILE": "/Users/you/creds/client_secrets.json"`
+Make sure you are using the **absolute path** to your credentials file — not a relative path, not `~/`. Example:
+```
+/Users/yourname/Documents/client_secrets.json   ✅
+~/Documents/client_secrets.json                 ✅
+client_secrets.json                              ❌
+```
 
-If you set one of these env vars but still get an error, the server will now tell you the exact resolved path it tried — double-check for typos and confirm the file exists at that path. `~/` and `$HOME` are expanded, so `~/creds.json` also works.
+### MCP only works in Claude Desktop app, not the website
+
+The MCP server runs locally on your machine. It only works in the **Claude Desktop app** (downloaded from [claude.ai/download](https://claude.ai/download)), not in the claude.ai browser interface.
 
 ### AI Client Configuration Issues
 
-If you're having trouble connecting:
-
-1. Make sure all file paths in your configuration are correct and use the full path
-2. Check that your service account has access to your GSC properties
-3. Restart your AI client after making any changes
-4. Look for error messages in the response when you try to use a tool
-5. Ensure your virtual environment is activated when running the server manually
-
-### Other Unexpected Issues
-
-If you encounter any other unexpected issues during installation or usage:
-
-1. Copy the exact error message you're receiving
-2. Use ChatGPT or Claude and explain your problem in detail, including:
-   - What you were trying to do
-   - The exact error message
-   - Your operating system
-   - Any steps you've already tried
-3. AI assistants can often help diagnose and resolve technical issues by suggesting specific solutions for your situation
-
-Remember that most issues have been encountered by others before, and there's usually a straightforward solution available.
+1. Make sure all file paths in your config are correct absolute paths
+2. Fully quit (`Cmd+Q`) and reopen the app after any config change — just closing the window is not enough
+3. Ask your AI assistant to "call get_capabilities" — it will report the exact auth status and error
 
 ---
 
 ## Safety: Destructive Operations
 
-By default, the tools that can **permanently modify your GSC account** (`add_site`, `delete_site`, `delete_sitemap`) are disabled. If you ask the AI to "clean things up" or "remove old properties", it will explain the safety restriction instead of deleting data.
+By default, `add_site`, `delete_site`, and `delete_sitemap` are disabled. To enable them:
 
-To enable these tools, set the `GSC_ALLOW_DESTRUCTIVE` environment variable:
-
-```bash
-# In your MCP client config (Claude Desktop, Cursor, etc.)
-GSC_ALLOW_DESTRUCTIVE=true
+```json
+"GSC_ALLOW_DESTRUCTIVE": "true"
 ```
-
-If you never use add/delete operations, you don't need to do anything — your existing setup works exactly as before.
 
 ---
 
 ## Remote Deployment & Docker (Advanced)
 
-The standard setup above runs the server locally on your machine. This section is **only for users who want to run it on a remote server, in a container, or share it with a team** — existing local users don't need any of this.
+The standard setup runs the server locally. This section is only for users who want to run it on a remote server or in a container.
 
 ### HTTP Transport
-
-By default the server communicates over stdio (standard input/output), which only works locally. To run it as a network server, set the `MCP_TRANSPORT` environment variable:
 
 ```bash
 MCP_TRANSPORT=sse MCP_HOST=0.0.0.0 MCP_PORT=3001 python gsc_server.py
 ```
 
-Your MCP client then connects to `http://your-server:3001/sse` instead of launching the process locally.
-
 | Variable | Default | Description |
 |---|---|---|
 | `MCP_TRANSPORT` | `stdio` | Set to `sse` for network/remote use |
-| `MCP_HOST` | `127.0.0.1` | Host to bind (use `0.0.0.0` for all interfaces) |
+| `MCP_HOST` | `127.0.0.1` | Host to bind |
 | `MCP_PORT` | `3001` | Port to bind |
 
 ### Docker
 
-A `Dockerfile` is included in the repo. Build and run:
-
 ```bash
-# Build the image
 docker build -t mcp-gsc .
 
-# Run locally (stdio mode — for testing)
-docker run -v /path/to/client_secrets.json:/app/client_secrets.json mcp-gsc
-
-# Run as a network server (SSE mode — for remote use)
 docker run \
   -e MCP_TRANSPORT=sse \
   -e MCP_HOST=0.0.0.0 \
@@ -507,97 +414,58 @@ docker run \
   mcp-gsc
 ```
 
-### Cloud Platforms
-
-The Docker image works on any container platform. Set `MCP_TRANSPORT=sse`, `MCP_HOST=0.0.0.0`, and inject credentials via environment variables or mounted secrets:
-
-- **Railway** — connect your repo, set env vars in the dashboard
-- **Render** — deploy as a Web Service, set env vars under Environment
-- **Fly.io** — `fly deploy`, set secrets with `fly secrets set`
-
 ---
 
 ## Related Tools
 
-If you work with Google Search Console regularly, you may also find these tools useful:
-
-**[Advanced GSC Visualizer](https://www.advancedgsc.com/)** — A Chrome extension (14,000+ users) that brings powerful charts, annotations, and one-click API access directly inside Google Search Console. Features include:
-
-- Interactive charts with trendlines, moving averages, and Google algorithm update overlays
-- One-click export of up to 25,000 rows from the GSC API — no coding required
-- Keyword cannibalization detection
-- Crawl stats visualizations
-- AI assistant for querying your GSC data directly in the browser
-
-Built by the same author. [Install from the Chrome Web Store →](https://chromewebstore.google.com/detail/advanced-gsc-visualizer/cdiccpnglfpnclonhpchpaaoigfpieel)
+**[Advanced GSC Visualizer](https://www.advancedgsc.com/)** — A Chrome extension (14,000+ users) with interactive charts, one-click export of up to 25,000 rows, keyword cannibalization detection, and an AI assistant — all directly inside Google Search Console. Built by the same author. [Install from the Chrome Web Store →](https://chromewebstore.google.com/detail/advanced-gsc-visualizer/cdiccpnglfpnclonhpchpaaoigfpieel)
 
 ---
 
 ## Contributing
 
-Found a bug or have an idea for improvement? We welcome your input! Open an issue or submit a pull request on GitHub.
+Found a bug or have an idea for improvement? Open an issue or submit a pull request on GitHub.
 
 ---
 
 ## License
 
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+MIT License. See the [LICENSE](LICENSE) file for details.
 
 ---
 
 ## Changelog
 
-### [0.3.0] — April 2026
+### [0.3.2] — April 2026
+- **OAuth browser flow fixed for uvx** — removed `isatty` block that prevented the OAuth browser window from opening when running as an MCP subprocess on macOS. OAuth + `uvx` now works out of the box.
+- **`get_capabilities` tool** — returns all available tools grouped by category plus live auth status in one call.
+- **Better auth error messages** — all tools now explicitly tell you to call `reauthenticate` when credentials are missing or expired.
+- **Improved `list_properties` description** — better semantic tool discovery in clients that use lazy tool loading.
 
-- **Cursor Marketplace plugin** — added `.cursor-plugin/plugin.json`, `mcp.json`, and 4 bundled SEO skills (`seo-weekly-report`, `cannibalization-check`, `indexing-audit`, `content-opportunities`)
-- **Stable token storage** — OAuth token now stored in the platform user config dir (`~/Library/Application Support/mcp-gsc/` on macOS, `~/.config/mcp-gsc/` on Linux) instead of the package directory; survives `uvx` upgrades. Existing tokens are silently migrated on first run.
-- **Structured JSON output** — all 13 data-returning tools now return structured JSON (`json.dumps`) instead of pipe-separated text, improving AI reasoning accuracy
-- **Dependency fix** — added `platformdirs>=4.0.0`; removed deprecated `oauth2client` from `requirements.txt`
-- **MCP safety** — fixed stdout pollution (`print()` → `logging.warning()`) that could corrupt stdio MCP protocol; replaced silent browser-flow hang in MCP context with clear `RuntimeError` directing users to `reauthenticate`
-- **Test suite** — 39 unit tests covering auth, all 13 data tools, safety guards, stdout cleanliness, and token migration (zero real credentials required)
+### [0.3.1] — April 2026
+- Fixed `list_properties` masking real auth errors; fail-fast on missing credentials.
+
+### [0.3.0] — April 2026
+- Cursor Marketplace plugin with 4 bundled SEO skills
+- Stable token storage in platform user config dir (survives `uvx` upgrades)
+- Structured JSON output for all data tools
+- 39 unit tests
 
 ### [0.2.2] — April 2026
-
-#### Added
-- **Safety mode for destructive tools:** `add_site`, `delete_site`, and `delete_sitemap` are now disabled by default. Set `GSC_ALLOW_DESTRUCTIVE=true` to enable them. This prevents accidental deletion of GSC properties through vague AI instructions.
-- **HTTP/SSE transport:** Set `MCP_TRANSPORT=sse` (plus `MCP_HOST` and `MCP_PORT`) to run the server as a network service instead of a local process. Enables Docker, cloud, and team deployments.
-- **Dockerfile:** Official container image using the `uv` base image. Includes `.dockerignore` to prevent credential files from being baked into images.
-- **CLAUDE.md:** Project context file for AI coding assistants — covers auth, env vars, and how to add new tools.
-
-#### Fixed
-- **Sitemap warning status:** `get_sitemaps` now correctly shows "Has warnings" when a sitemap has warnings but no errors. Previously, warnings were silently ignored in the status field. (Thanks [@nloadholtes](https://github.com/nloadholtes)!)
-
-#### Improved
-- **PyPI package:** `pyproject.toml` now correctly declares `gsc_server.py` as the installable module. `pip install mcp-gsc` and `uvx mcp-gsc` now produce a working installation. (Thanks [@jjeejj](https://github.com/jjeejj)!)
-
----
-
-### [0.2.0] — March 2026
-
-#### Added
-- **Data freshness:** All search analytics queries now use `dataState: "all"` by default, returning data that matches the GSC dashboard instead of finalized-only data (which lags 2–3 days). Configurable via the `GSC_DATA_STATE` environment variable (`"all"` or `"final"`).
-- **Flexible row limits:** `get_search_analytics` and `get_search_by_page_query` now accept an optional `row_limit` parameter (default 20, max 500). Claude will automatically choose an appropriate value based on your request — use higher values for comprehensive analysis, lower values for quick overviews.
-- **Multi-dimension filtering:** `get_advanced_search_analytics` now accepts a `filters` parameter — a JSON array of filter objects for AND logic across multiple dimensions simultaneously (e.g., country = USA **and** device = mobile). The existing single-filter parameters (`filter_dimension`, `filter_operator`, `filter_expression`) remain fully supported.
+- Safety mode for destructive tools (disabled by default)
+- HTTP/SSE transport for remote deployments
+- Dockerfile
 
 ### [0.2.1] — March 2026
+- `reauthenticate` tool for switching Google accounts
+- Fixed sitemap TypeError crash
+- Fixed domain property 404 errors
 
-#### Added
-- **Reauthenticate tool:** New `reauthenticate` tool lets you switch Google accounts by deleting the saved OAuth token and triggering a fresh browser login. Ask your AI assistant: *"switch to a different Google account"*. (Thanks [@fterenzani](https://github.com/fterenzani)!)
-
-#### Fixed
-- **Sitemap TypeError crash:** `get_sitemaps` and `list_sitemaps_enhanced` crashed with `TypeError` when a sitemap had errors or warnings, because the GSC API returns those counts as strings. Added `int()` casts before comparison. (Thanks [@mcprobert](https://github.com/mcprobert)!)
-- **File cache warning:** Suppressed the `file_cache is only supported with oauth2client<4.0.0` warning that caused crashes on MCP hosts that treat any stderr output as fatal (e.g. GitHub Copilot CLI).
-- **Domain property 404 errors:** All tools now return a clear, actionable message when a 404 occurs, explaining the exact format required and service account permission requirements for `sc-domain:` properties.
-
-#### Improved
-- **Multi-client support:** README now explicitly lists Claude, Cursor, Codex, Gemini CLI, and Antigravity as supported clients with setup guidance for each.
-- **`site_url` guidance:** All 15 tool docstrings now explain how to get the exact property URL from `list_properties` and how domain properties relate to subdomain filtering.
-
----
+### [0.2.0] — March 2026
+- `dataState: "all"` by default (matches GSC dashboard)
+- Flexible `row_limit` parameter (up to 500)
+- Multi-dimension filtering for advanced analytics
 
 ### [0.1.0] — Initial release
-
 - 19 tools covering property management, search analytics, URL inspection, and sitemap management
 - OAuth and service account authentication
-- Batch URL inspection (up to 10 URLs)
-- Period comparison tool
