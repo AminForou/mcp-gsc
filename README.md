@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/aminforou-mcp-gsc-badge.png)](https://mseep.ai/app/aminforou-mcp-gsc)
+
 # Google Search Console MCP server for SEOs
 
 > **April 2026 (v0.3.0):** Coming to the **Cursor Marketplace** — one-click install with bundled SEO skills. Also: token storage moved to user config dir (survives `uvx` upgrades), all data tools now return structured JSON, and 39 new unit tests. See the [Changelog](#changelog) for details.
