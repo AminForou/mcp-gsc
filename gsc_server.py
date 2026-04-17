@@ -147,7 +147,8 @@ def get_gsc_service():
         f"Authentication failed. Please either:\n"
         f"1. Set up OAuth by setting GSC_OAUTH_CLIENT_SECRETS_FILE to an absolute path, "
         f"or (for clone installs) placing a client_secrets.json file in the script "
-        f"directory, or\n"
+        f"directory, then call the 'reauthenticate' tool to open a browser login window "
+        f"and complete authentication, or\n"
         f"2. Set GSC_CREDENTIALS_PATH to an absolute path, or (for clone installs) "
         f"place a service account credentials file in one of these locations: "
         f"{', '.join([p for p in POSSIBLE_CREDENTIAL_PATHS[1:] if p])}\n"
@@ -190,17 +191,6 @@ def get_gsc_service_oauth():
         
         # Start new OAuth flow if we don't have valid credentials
         if not creds or not creds.valid:
-            # IMPORTANT: When running as MCP server (stdio), run_local_server() blocks
-            # forever because no browser can open. Only allow interactive OAuth when
-            # running directly from terminal (stdin is a TTY).
-            if not sys.stdin.isatty():
-                raise RuntimeError(
-                    "OAuth token is missing or expired and cannot be refreshed. "
-                    "Run the OAuth flow manually first:\n"
-                    f"  cd {SCRIPT_DIR} && python gsc_server.py\n"
-                    "Then restart Claude Code."
-                )
-
             # Check if client secrets file exists
             if not os.path.exists(OAUTH_CLIENT_SECRETS_FILE):
                 raise FileNotFoundError(
@@ -208,8 +198,7 @@ def get_gsc_service_oauth():
                     f"or set the GSC_OAUTH_CLIENT_SECRETS_FILE environment variable."
                 )
 
-            # Start OAuth flow (only when running interactively — isatty guard above prevents
-            # reaching this point in MCP stdio context).
+            # Start OAuth flow — opens a browser window on macOS even from MCP subprocess.
             flow = InstalledAppFlow.from_client_secrets_file(OAUTH_CLIENT_SECRETS_FILE, SCOPES)
             creds = flow.run_local_server(port=0)
             
@@ -246,9 +235,69 @@ def _site_not_found_error(site_url: str) -> str:
 
 
 @mcp.tool()
+async def get_capabilities() -> str:
+    """
+    Get a full list of all available tools, current auth status, and how to get started.
+    ALWAYS call this first when asked what tools are available, what this server can do,
+    or how to get started. Returns all tool names grouped by category in a single call —
+    faster than searching individually. Also shows if authentication is needed.
+    """
+    # Check auth status
+    try:
+        get_gsc_service()
+        auth_status = "✅ Authenticated — ready to use all tools."
+    except Exception as e:
+        auth_status = f"❌ Not authenticated — call the 'reauthenticate' tool first to open a browser login window.\nDetails: {e}"
+
+    return f"""Google Search Console MCP Server
+
+AUTH STATUS:
+{auth_status}
+
+GETTING STARTED:
+1. If not authenticated, call the 'reauthenticate' tool to complete OAuth login.
+2. Call 'list_properties' to see all your GSC sites and get the exact site_url for other tools.
+3. Use any tool below with the site_url from step 2.
+
+AVAILABLE TOOLS:
+
+Authentication:
+  - reauthenticate: Open browser OAuth login window. Call this if you see auth errors.
+
+Properties:
+  - list_properties: List all GSC sites/properties you have access to (start here)
+  - get_site_details: Get verification and ownership details for a site
+
+Analytics & Reporting:
+  - get_search_analytics: Top queries and pages with clicks, impressions, CTR, position
+  - get_performance_overview: Summary of site performance for a time period
+  - compare_search_periods: Compare performance between two time periods
+  - get_search_by_page_query: Search terms driving traffic to a specific page
+  - get_advanced_search_analytics: Advanced filtering by country, device, query, page
+
+URL Inspection & Indexing:
+  - inspect_url_enhanced: Detailed crawl/index status for a specific URL
+  - batch_url_inspection: Inspect up to 10 URLs at once
+  - check_indexing_issues: Check multiple URLs for indexing problems
+
+Sitemaps:
+  - get_sitemaps: List all sitemaps for a site
+  - list_sitemaps_enhanced: Detailed sitemap info including errors and warnings
+  - manage_sitemaps: Submit or delete sitemaps (requires GSC_ALLOW_DESTRUCTIVE=true for delete)
+
+Destructive (disabled by default, set GSC_ALLOW_DESTRUCTIVE=true to enable):
+  - add_site: Add a new property to GSC
+  - delete_site: Remove a property from GSC
+"""
+
+
+@mcp.tool()
 async def list_properties() -> str:
     """
-    Retrieves and returns the user's Search Console properties.
+    List all Google Search Console (GSC) properties and sites the user has access to.
+    Use this to see all verified sites, domain properties, and URL-prefix properties
+    in the connected Google Search Console account. Always call this first to get the
+    exact site_url needed for other tools.
     """
     try:
         service = get_gsc_service()
@@ -1588,17 +1637,9 @@ async def reauthenticate() -> str:
                 "GSC_OAUTH_CLIENT_SECRETS_FILE environment variable."
             )
 
-        # IMPORTANT: run_local_server() blocks forever when running as MCP subprocess.
-        if not sys.stdin.isatty():
-            msg = "Token deleted. " if token_deleted else ""
-            return (
-                msg + "Cannot open browser for re-authentication from MCP. "
-                "Run manually:\n"
-                f"  cd {SCRIPT_DIR} && .venv/bin/python gsc_server.py\n"
-                "Then restart Claude Code."
-            )
-
-        # Trigger new OAuth flow — this opens a browser window on the local machine
+        # Trigger new OAuth flow — opens a browser window on the local machine.
+        # run_local_server() works on macOS even from an MCP subprocess because
+        # macOS can open browsers via webbrowser.open() regardless of TTY state.
         flow = InstalledAppFlow.from_client_secrets_file(OAUTH_CLIENT_SECRETS_FILE, SCOPES)
         creds = flow.run_local_server(port=0)
 
