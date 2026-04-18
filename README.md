@@ -87,13 +87,15 @@ On first use, a browser window will open asking you to sign in to your Google ac
 5. Save the file somewhere permanent (e.g. `~/Documents/service_account.json`)
 6. Add the service account email to your GSC property: Search Console → Settings → Users and permissions → Add user → Full access
 
-**Watch the beginner-friendly setup tutorial:**
+**Watch the step-by-step setup tutorial for this section:**
 
 <div align="center">
-  <a href="https://youtu.be/PCWsK5BgSd0">
-    <img src="https://i.ytimg.com/vi/PCWsK5BgSd0/maxresdefault.jpg" alt="Google Search Console API Setup Tutorial" width="600" style="margin: 20px 0; border-radius: 8px;">
+  <a href="https://www.youtube.com/watch?v=vhIOoD7B8Ow">
+    <img src="assets/new-video-thumbnail.jpg" alt="GSC MCP Server Installation Guide 2026" width="600" style="margin: 20px 0; border-radius: 8px;">
   </a>
 </div>
+
+*Updated 2026 — covers the full installation process using the new uvx method, from setting up your Google credentials to your first successful query.*
 
 ---
 
@@ -220,6 +222,14 @@ For OAuth: on first use, a browser window will open automatically for login. Aft
 ---
 
 #### Option B — Clone (Advanced)
+
+**Prefer a video walkthrough for this method?** The tutorial below covers the clone install path step by step — virtual environment setup, dependencies, and config:
+
+<div align="center">
+  <a href="https://youtu.be/PCWsK5BgSd0">
+    <img src="https://i.ytimg.com/vi/PCWsK5BgSd0/maxresdefault.jpg" alt="Google Search Console API Setup Tutorial" width="600" style="margin: 20px 0; border-radius: 8px;">
+  </a>
+</div>
 
 Use this if you want to modify the code or run a specific local version. This method uses the video tutorial above for the credential setup steps.
 
