@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+test_gsc_server.py
+Dockerfile
+.dockerignore
+.git/
+.github/
+assets/
+skills/
+.claude-plugin/
+.cursor-plugin/

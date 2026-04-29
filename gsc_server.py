@@ -11,9 +11,19 @@ import google.auth
 from google.auth.transport.requests import Request
 from google.oauth2 import service_account
 from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+
+# When running on Vercel, MCP_TRANSPORT=vercel disables filesystem-based auth
+# (no token.json on disk, no client_secrets.json) and routes everything through
+# the shared KV-backed token store managed by api/oauth/*.
+RUNNING_ON_VERCEL = os.environ.get("MCP_TRANSPORT", "").lower() == "vercel"
+
+# InstalledAppFlow is only used by the local stdio/SSE flow. Importing it on
+# Vercel still works, but we skip referencing it from inside `reauthenticate`
+# when running serverless.
+if not RUNNING_ON_VERCEL:
+    from google_auth_oauthlib.flow import InstalledAppFlow  # noqa: F401
 
 # Suppress the noisy file_cache warning from google-api-python-client.
 # Some MCP hosts (e.g. GitHub Copilot CLI) treat any stderr output as a
@@ -36,39 +46,49 @@ def _expand_path(path: Optional[str]) -> Optional[str]:
     return os.path.expandvars(os.path.expanduser(path))
 
 
-# Path to your service account JSON or user credentials JSON
-# First check if GSC_CREDENTIALS_PATH environment variable is set
-# Then try looking in the script directory and current working directory as fallbacks
-GSC_CREDENTIALS_PATH = _expand_path(os.environ.get("GSC_CREDENTIALS_PATH"))
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-POSSIBLE_CREDENTIAL_PATHS = [
-    GSC_CREDENTIALS_PATH,  # First try the environment variable if set
-    os.path.join(SCRIPT_DIR, "service_account_credentials.json"),
-    os.path.join(os.getcwd(), "service_account_credentials.json"),
-    # Add any other potential paths here
-]
 
-# OAuth client secrets file path
-OAUTH_CLIENT_SECRETS_FILE = _expand_path(os.environ.get("GSC_OAUTH_CLIENT_SECRETS_FILE"))
-# Track whether the user explicitly set the env var (vs. using the SCRIPT_DIR fallback).
-# Needed so get_gsc_service() can fail-fast when the explicit path is wrong, while
-# leaving the fallback behavior unchanged for clone-install users.
-GSC_OAUTH_CLIENT_SECRETS_FILE_EXPLICIT = OAUTH_CLIENT_SECRETS_FILE is not None
-if not OAUTH_CLIENT_SECRETS_FILE:
-    OAUTH_CLIENT_SECRETS_FILE = os.path.join(SCRIPT_DIR, "client_secrets.json")
+# Defaults so module-level references stay valid on Vercel where filesystem
+# init is skipped. The local-mode block below overrides them.
+GSC_CREDENTIALS_PATH: Optional[str] = None
+POSSIBLE_CREDENTIAL_PATHS: List[Optional[str]] = []
+OAUTH_CLIENT_SECRETS_FILE: str = ""
+GSC_OAUTH_CLIENT_SECRETS_FILE_EXPLICIT: bool = False
+TOKEN_FILE: str = ""
 
-# Token file path for storing OAuth tokens.
-# Stored in the user config directory so it survives uvx updates (which replace SCRIPT_DIR).
-# Override with GSC_CONFIG_DIR env var for Docker/power users.
-_CONFIG_DIR = os.environ.get("GSC_CONFIG_DIR") or user_config_dir("mcp-gsc")
-os.makedirs(_CONFIG_DIR, exist_ok=True)
-TOKEN_FILE = os.path.join(_CONFIG_DIR, "token.json")
+if not RUNNING_ON_VERCEL:
+    # Path to your service account JSON or user credentials JSON
+    # First check if GSC_CREDENTIALS_PATH environment variable is set
+    # Then try looking in the script directory and current working directory as fallbacks
+    GSC_CREDENTIALS_PATH = _expand_path(os.environ.get("GSC_CREDENTIALS_PATH"))
+    POSSIBLE_CREDENTIAL_PATHS = [
+        GSC_CREDENTIALS_PATH,  # First try the environment variable if set
+        os.path.join(SCRIPT_DIR, "service_account_credentials.json"),
+        os.path.join(os.getcwd(), "service_account_credentials.json"),
+        # Add any other potential paths here
+    ]
 
-# Silently migrate token from old location (SCRIPT_DIR) on first run after upgrade.
-# Existing users never need to re-authenticate.
-_OLD_TOKEN = os.path.join(SCRIPT_DIR, "token.json")
-if os.path.exists(_OLD_TOKEN) and not os.path.exists(TOKEN_FILE):
-    shutil.move(_OLD_TOKEN, TOKEN_FILE)
+    # OAuth client secrets file path
+    OAUTH_CLIENT_SECRETS_FILE = _expand_path(os.environ.get("GSC_OAUTH_CLIENT_SECRETS_FILE"))
+    # Track whether the user explicitly set the env var (vs. using the SCRIPT_DIR fallback).
+    # Needed so get_gsc_service() can fail-fast when the explicit path is wrong, while
+    # leaving the fallback behavior unchanged for clone-install users.
+    GSC_OAUTH_CLIENT_SECRETS_FILE_EXPLICIT = OAUTH_CLIENT_SECRETS_FILE is not None
+    if not OAUTH_CLIENT_SECRETS_FILE:
+        OAUTH_CLIENT_SECRETS_FILE = os.path.join(SCRIPT_DIR, "client_secrets.json")
+
+    # Token file path for storing OAuth tokens.
+    # Stored in the user config directory so it survives uvx updates (which replace SCRIPT_DIR).
+    # Override with GSC_CONFIG_DIR env var for Docker/power users.
+    _CONFIG_DIR = os.environ.get("GSC_CONFIG_DIR") or user_config_dir("mcp-gsc")
+    os.makedirs(_CONFIG_DIR, exist_ok=True)
+    TOKEN_FILE = os.path.join(_CONFIG_DIR, "token.json")
+
+    # Silently migrate token from old location (SCRIPT_DIR) on first run after upgrade.
+    # Existing users never need to re-authenticate.
+    _OLD_TOKEN = os.path.join(SCRIPT_DIR, "token.json")
+    if os.path.exists(_OLD_TOKEN) and not os.path.exists(TOKEN_FILE):
+        shutil.move(_OLD_TOKEN, TOKEN_FILE)
 
 # Environment variable to skip OAuth authentication
 SKIP_OAUTH = os.environ.get("GSC_SKIP_OAUTH", "").lower() in ("true", "1", "yes")
@@ -90,11 +110,62 @@ DATA_STATE = _raw_data_state
 
 SCOPES = ["https://www.googleapis.com/auth/webmasters"]
 
-def get_gsc_service():
+
+def _get_gsc_service_vercel(account: Optional[str]) -> Any:
+    """Build a Search Console service from a token in Vercel KV.
+
+    Resolves the account in this order: explicit ``account`` arg → default
+    account stored in KV → first email in the linked-accounts set. Refreshes
+    the token via the refresh_token grant if it's expired and writes the new
+    access token back to KV so other invocations benefit.
+    """
+    from lib import token_store
+
+    selected = account or token_store.get_default()
+    if not selected:
+        accounts = token_store.list_accounts()
+        if not accounts:
+            redirect = os.environ.get("OAUTH_REDIRECT_URI", "")
+            start_hint = redirect.replace("/api/oauth/callback", "/api/oauth/start") or "/api/oauth/start"
+            raise FileNotFoundError(
+                "No Google accounts are linked to this MCP server yet. "
+                f"Visit {start_hint} to authorize one before calling tools."
+            )
+        selected = accounts[0]
+
+    token_info = token_store.get_token(selected)
+    if not token_info:
+        raise FileNotFoundError(
+            f"No stored token for account '{selected}'. "
+            "Visit /api/oauth/start to (re)link this account."
+        )
+
+    creds = Credentials.from_authorized_user_info(token_info, SCOPES)
+    if not creds.valid:
+        if creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+            token_store.set_token(selected, creds.to_json())
+        else:
+            raise RuntimeError(
+                f"Stored credentials for '{selected}' are invalid and have no "
+                "refresh_token. Re-link the account at /api/oauth/start."
+            )
+    return build("searchconsole", "v1", credentials=creds, cache_discovery=False)
+
+
+def get_gsc_service(account: Optional[str] = None):
     """
     Returns an authorized Search Console service object.
-    First tries OAuth authentication, then falls back to service account.
+
+    On Vercel: looks up the per-account token in Vercel KV (refreshing if
+    expired) and builds a service for it.
+
+    Otherwise (stdio/SSE/local): tries OAuth authentication first, then falls
+    back to service account credentials on disk.
     """
+    if RUNNING_ON_VERCEL:
+        return _get_gsc_service_vercel(account)
+
     # Fail-fast if credential env vars are set but point to files that don't exist.
     # Without this, a typo'd or uvx-incompatible path would silently fall through to
     # SCRIPT_DIR/cwd fallbacks (which don't work under uvx) and emit a misleading
@@ -292,15 +363,20 @@ Destructive (disabled by default, set GSC_ALLOW_DESTRUCTIVE=true to enable):
 
 
 @mcp.tool()
-async def list_properties() -> str:
+async def list_properties(account: Optional[str] = None) -> str:
     """
     List all Google Search Console (GSC) properties and sites the user has access to.
     Use this to see all verified sites, domain properties, and URL-prefix properties
     in the connected Google Search Console account. Always call this first to get the
     exact site_url needed for other tools.
+
+    Args:
+        account: Optional Google account email to query (multi-tenant deploys). When omitted, the
+                 server's configured default linked account is used. Call list_linked_accounts to
+                 see which accounts are available.
     """
     try:
-        service = get_gsc_service()
+        service = get_gsc_service(account)
         site_list = service.sites().list().execute()
 
         # site_list is typically something like:
@@ -331,12 +407,13 @@ async def list_properties() -> str:
         return f"Error retrieving properties: {str(e)}"
 
 @mcp.tool()
-async def add_site(site_url: str) -> str:
+async def add_site(site_url: str, account: Optional[str] = None) -> str:
     """
     Add a site to your Search Console properties.
-    
+
     Args:
         site_url: The URL of the site to add (must be exact match e.g. https://example.com, or https://www.example.com, or https://subdomain.example.com/path/, for domain properties use format: sc-domain:example.com)
+        account: Optional Google account email (multi-tenant deploys). Defaults to the server's configured account.
     """
     if not ALLOW_DESTRUCTIVE:
         return (
@@ -344,7 +421,7 @@ async def add_site(site_url: str) -> str:
             "Set GSC_ALLOW_DESTRUCTIVE=true in your environment to enable add/delete tools."
         )
     try:
-        service = get_gsc_service()
+        service = get_gsc_service(account)
         
         # Add the site
         response = service.sites().add(siteUrl=site_url).execute()
@@ -392,12 +469,13 @@ async def add_site(site_url: str) -> str:
         return f"Error adding site: {str(e)}"
 
 @mcp.tool()
-async def delete_site(site_url: str) -> str:
+async def delete_site(site_url: str, account: Optional[str] = None) -> str:
     """
     Remove a site from your Search Console properties.
-    
+
     Args:
         site_url: The URL of the site to remove (must be exact match e.g. https://example.com, or https://www.example.com, or https://subdomain.example.com/path/, for domain properties use format: sc-domain:example.com)
+        account: Optional Google account email (multi-tenant deploys). Defaults to the server's configured account.
     """
     if not ALLOW_DESTRUCTIVE:
         return (
@@ -405,7 +483,7 @@ async def delete_site(site_url: str) -> str:
             "Set GSC_ALLOW_DESTRUCTIVE=true in your environment to enable add/delete tools."
         )
     try:
-        service = get_gsc_service()
+        service = get_gsc_service(account)
         
         # Delete the site
         service.sites().delete(siteUrl=site_url).execute()
@@ -446,7 +524,7 @@ async def delete_site(site_url: str) -> str:
         return f"Error removing site: {str(e)}"
 
 @mcp.tool()
-async def get_search_analytics(site_url: str, days: int = 28, dimensions: str = "query", row_limit: int = 20) -> str:
+async def get_search_analytics(site_url: str, days: int = 28, dimensions: str = "query", row_limit: int = 20, account: Optional[str] = None) -> str:
     """
     Get search analytics data for a specific property.
     
@@ -462,7 +540,7 @@ async def get_search_analytics(site_url: str, days: int = 28, dimensions: str = 
                    beyond 500 rows, use get_advanced_search_analytics which supports pagination.
     """
     try:
-        service = get_gsc_service()
+        service = get_gsc_service(account)
         
         # Calculate date range
         end_date = datetime.now().date()
@@ -514,7 +592,7 @@ async def get_search_analytics(site_url: str, days: int = 28, dimensions: str = 
         return f"Error retrieving search analytics: {str(e)}"
 
 @mcp.tool()
-async def get_site_details(site_url: str) -> str:
+async def get_site_details(site_url: str, account: Optional[str] = None) -> str:
     """
     Get detailed information about a specific Search Console property.
     
@@ -524,7 +602,7 @@ async def get_site_details(site_url: str) -> str:
                   domain property as site_url and filter by page to analyze a specific subdomain.
     """
     try:
-        service = get_gsc_service()
+        service = get_gsc_service(account)
         
         # Get site details
         site_info = service.sites().get(siteUrl=site_url).execute()
@@ -554,7 +632,7 @@ async def get_site_details(site_url: str) -> str:
         return f"Error retrieving site details: {str(e)}"
 
 @mcp.tool()
-async def get_sitemaps(site_url: str) -> str:
+async def get_sitemaps(site_url: str, account: Optional[str] = None) -> str:
     """
     List all sitemaps for a specific Search Console property.
     
@@ -564,7 +642,7 @@ async def get_sitemaps(site_url: str) -> str:
                   domain property as site_url and filter by page to analyze a specific subdomain.
     """
     try:
-        service = get_gsc_service()
+        service = get_gsc_service(account)
         
         # Get sitemaps list
         sitemaps = service.sitemaps().list(siteUrl=site_url).execute()
@@ -618,7 +696,7 @@ async def get_sitemaps(site_url: str) -> str:
         return f"Error retrieving sitemaps: {str(e)}"
 
 @mcp.tool()
-async def inspect_url_enhanced(site_url: str, page_url: str) -> str:
+async def inspect_url_enhanced(site_url: str, page_url: str, account: Optional[str] = None) -> str:
     """
     Enhanced URL inspection to check indexing status and rich results in Google.
     
@@ -629,7 +707,7 @@ async def inspect_url_enhanced(site_url: str, page_url: str) -> str:
         page_url: The specific URL to inspect
     """
     try:
-        service = get_gsc_service()
+        service = get_gsc_service(account)
         
         # Build request
         request = {
@@ -691,7 +769,7 @@ async def inspect_url_enhanced(site_url: str, page_url: str) -> str:
         return f"Error inspecting URL: {str(e)}"
 
 @mcp.tool()
-async def batch_url_inspection(site_url: str, urls: str) -> str:
+async def batch_url_inspection(site_url: str, urls: str, account: Optional[str] = None) -> str:
     """
     Inspect multiple URLs in batch (within API limits).
     
@@ -702,7 +780,7 @@ async def batch_url_inspection(site_url: str, urls: str) -> str:
         urls: List of URLs to inspect, one per line
     """
     try:
-        service = get_gsc_service()
+        service = get_gsc_service(account)
         
         # Parse URLs
         url_list = [url.strip() for url in urls.split('\n') if url.strip()]
@@ -775,7 +853,7 @@ async def batch_url_inspection(site_url: str, urls: str) -> str:
         return f"Error performing batch inspection: {str(e)}"
 
 @mcp.tool()
-async def check_indexing_issues(site_url: str, urls: str) -> str:
+async def check_indexing_issues(site_url: str, urls: str, account: Optional[str] = None) -> str:
     """
     Check for specific indexing issues across multiple URLs.
     
@@ -786,7 +864,7 @@ async def check_indexing_issues(site_url: str, urls: str) -> str:
         urls: List of URLs to check, one per line
     """
     try:
-        service = get_gsc_service()
+        service = get_gsc_service(account)
         
         # Parse URLs
         url_list = [url.strip() for url in urls.split('\n') if url.strip()]
@@ -879,7 +957,7 @@ async def check_indexing_issues(site_url: str, urls: str) -> str:
         return f"Error checking indexing issues: {str(e)}"
 
 @mcp.tool()
-async def get_performance_overview(site_url: str, days: int = 28) -> str:
+async def get_performance_overview(site_url: str, days: int = 28, account: Optional[str] = None) -> str:
     """
     Get a performance overview for a specific property.
     
@@ -890,7 +968,7 @@ async def get_performance_overview(site_url: str, days: int = 28) -> str:
         days: Number of days to look back (default: 28)
     """
     try:
-        service = get_gsc_service()
+        service = get_gsc_service(account)
         
         # Calculate date range
         end_date = datetime.now().date()
@@ -971,7 +1049,8 @@ async def get_advanced_search_analytics(
     filter_operator: str = "contains", 
     filter_expression: str = None,
     filters: str = None,
-    data_state: str = None
+    data_state: str = None,
+    account: Optional[str] = None
 ) -> str:
     """
     Get advanced search analytics data with sorting, filtering, and pagination.
@@ -1000,7 +1079,7 @@ async def get_advanced_search_analytics(
         data_state: Data freshness — "all" (default, matches GSC dashboard) or "final" (confirmed data only, 2-3 day lag)
     """
     try:
-        service = get_gsc_service()
+        service = get_gsc_service(account)
         
         # Calculate date range if not provided
         if not end_date:
@@ -1129,7 +1208,8 @@ async def compare_search_periods(
     period2_start: str,
     period2_end: str,
     dimensions: str = "query",
-    limit: int = 10
+    limit: int = 10,
+    account: Optional[str] = None
 ) -> str:
     """
     Compare search analytics data between two time periods.
@@ -1146,7 +1226,7 @@ async def compare_search_periods(
         limit: Number of top results to compare (default: 10)
     """
     try:
-        service = get_gsc_service()
+        service = get_gsc_service(account)
         
         # Parse dimensions
         dimension_list = [d.strip() for d in dimensions.split(",")]
@@ -1262,7 +1342,8 @@ async def get_search_by_page_query(
     site_url: str,
     page_url: str,
     days: int = 28,
-    row_limit: int = 20
+    row_limit: int = 20,
+    account: Optional[str] = None
 ) -> str:
     """
     Get search analytics data for a specific page, broken down by query.
@@ -1278,7 +1359,7 @@ async def get_search_by_page_query(
                    beyond 500 rows, use get_advanced_search_analytics which supports pagination.
     """
     try:
-        service = get_gsc_service()
+        service = get_gsc_service(account)
         
         # Calculate date range
         end_date = datetime.now().date()
@@ -1340,7 +1421,7 @@ async def get_search_by_page_query(
         return f"Error retrieving page query data: {str(e)}"
 
 @mcp.tool()
-async def list_sitemaps_enhanced(site_url: str, sitemap_index: str = None) -> str:
+async def list_sitemaps_enhanced(site_url: str, sitemap_index: str = None, account: Optional[str] = None) -> str:
     """
     List all sitemaps for a specific Search Console property with detailed information.
     
@@ -1351,7 +1432,7 @@ async def list_sitemaps_enhanced(site_url: str, sitemap_index: str = None) -> st
         sitemap_index: Optional sitemap index URL to list child sitemaps
     """
     try:
-        service = get_gsc_service()
+        service = get_gsc_service(account)
         
         # Get sitemaps list
         if sitemap_index:
@@ -1408,7 +1489,7 @@ async def list_sitemaps_enhanced(site_url: str, sitemap_index: str = None) -> st
         return f"Error retrieving sitemaps: {str(e)}"
 
 @mcp.tool()
-async def get_sitemap_details(site_url: str, sitemap_url: str) -> str:
+async def get_sitemap_details(site_url: str, sitemap_url: str, account: Optional[str] = None) -> str:
     """
     Get detailed information about a specific sitemap.
     
@@ -1419,7 +1500,7 @@ async def get_sitemap_details(site_url: str, sitemap_url: str) -> str:
         sitemap_url: The full URL of the sitemap to inspect
     """
     try:
-        service = get_gsc_service()
+        service = get_gsc_service(account)
         
         # Get sitemap details
         details = service.sitemaps().get(siteUrl=site_url, feedpath=sitemap_url).execute()
@@ -1461,7 +1542,7 @@ async def get_sitemap_details(site_url: str, sitemap_url: str) -> str:
         return f"Error retrieving sitemap details: {str(e)}"
 
 @mcp.tool()
-async def submit_sitemap(site_url: str, sitemap_url: str) -> str:
+async def submit_sitemap(site_url: str, sitemap_url: str, account: Optional[str] = None) -> str:
     """
     Submit a new sitemap or resubmit an existing one to Google.
     
@@ -1472,7 +1553,7 @@ async def submit_sitemap(site_url: str, sitemap_url: str) -> str:
         sitemap_url: The full URL of the sitemap to submit
     """
     try:
-        service = get_gsc_service()
+        service = get_gsc_service(account)
         
         # Submit the sitemap
         service.sitemaps().submit(siteUrl=site_url, feedpath=sitemap_url).execute()
@@ -1508,7 +1589,7 @@ async def submit_sitemap(site_url: str, sitemap_url: str) -> str:
         return f"Error submitting sitemap: {str(e)}"
 
 @mcp.tool()
-async def delete_sitemap(site_url: str, sitemap_url: str) -> str:
+async def delete_sitemap(site_url: str, sitemap_url: str, account: Optional[str] = None) -> str:
     """
     Delete (unsubmit) a sitemap from Google Search Console.
     
@@ -1524,7 +1605,7 @@ async def delete_sitemap(site_url: str, sitemap_url: str) -> str:
             "Set GSC_ALLOW_DESTRUCTIVE=true in your environment to enable add/delete tools."
         )
     try:
-        service = get_gsc_service()
+        service = get_gsc_service(account)
         
         # First check if the sitemap exists
         try:
@@ -1544,7 +1625,7 @@ async def delete_sitemap(site_url: str, sitemap_url: str) -> str:
         return f"Error deleting sitemap: {str(e)}"
 
 @mcp.tool()
-async def manage_sitemaps(site_url: str, action: str, sitemap_url: str = None, sitemap_index: str = None) -> str:
+async def manage_sitemaps(site_url: str, action: str, sitemap_url: str = None, sitemap_index: str = None, account: Optional[str] = None) -> str:
     """
     All-in-one tool to manage sitemaps (list, get details, submit, delete).
     
@@ -1569,13 +1650,13 @@ async def manage_sitemaps(site_url: str, action: str, sitemap_url: str = None, s
         
         # Perform the requested action
         if action == "list":
-            return await list_sitemaps_enhanced(site_url, sitemap_index)
+            return await list_sitemaps_enhanced(site_url, sitemap_index, account=account)
         elif action == "details":
-            return await get_sitemap_details(site_url, sitemap_url)
+            return await get_sitemap_details(site_url, sitemap_url, account=account)
         elif action == "submit":
-            return await submit_sitemap(site_url, sitemap_url)
+            return await submit_sitemap(site_url, sitemap_url, account=account)
         elif action == "delete":
-            return await delete_sitemap(site_url, sitemap_url)
+            return await delete_sitemap(site_url, sitemap_url, account=account)
     
     except Exception as e:
         return f"Error managing sitemaps: {str(e)}"
@@ -1616,10 +1697,26 @@ Amin combines technical SEO knowledge with programming skills to create innovati
 @mcp.tool()
 async def reauthenticate() -> str:
     """
-    Perform a logout and new login sequence.
-    Deletes the current OAuth token file and triggers the browser authentication flow.
-    Useful when you need to switch to a different Google account.
+    Re-link a Google account to this MCP server.
+
+    On Vercel deploys: returns a URL to visit in a browser to complete the OAuth
+    flow (the server cannot pop a window itself). Anyone in the org can visit
+    this URL to add a new Google account to the shared pool.
+
+    On local stdio/SSE deploys: deletes the current OAuth token file and opens
+    a browser-based login window.
     """
+    if RUNNING_ON_VERCEL:
+        redirect = os.environ.get("OAUTH_REDIRECT_URI", "")
+        start_url = redirect.replace("/api/oauth/callback", "/api/oauth/start") or "/api/oauth/start"
+        return (
+            f"To link a Google account, visit:\n  {start_url}\n\n"
+            "Anyone in the org can use this URL — the resulting token is added "
+            "to the shared pool. Pass the linked email to other tools via the "
+            "'account' parameter, or call 'list_linked_accounts' to see which "
+            "accounts are available."
+        )
+
     try:
         # Delete existing token to force re-authentication
         if os.path.exists(TOKEN_FILE):
@@ -1654,6 +1751,35 @@ async def reauthenticate() -> str:
 
     except Exception as e:
         return f"Error during reauthentication: {str(e)}"
+
+
+@mcp.tool()
+async def list_linked_accounts() -> str:
+    """
+    List Google accounts linked to this MCP server (Vercel deploys only).
+
+    Returns the shared pool of authorized Google accounts and the default account
+    used when a tool call omits the 'account' parameter. Anyone in the org can
+    add a new account by visiting /api/oauth/start on the deployed URL.
+    """
+    if not RUNNING_ON_VERCEL:
+        return json.dumps({
+            "mode": "local",
+            "note": "Multi-account linking is only available on Vercel deploys. "
+                    "Local installs use a single token.json on disk.",
+        })
+
+    try:
+        from lib import token_store
+        accounts = token_store.list_accounts()
+        default = token_store.get_default()
+        return json.dumps({
+            "accounts": accounts,
+            "default": default,
+            "count": len(accounts),
+        })
+    except Exception as e:
+        return f"Error listing linked accounts: {str(e)}"
 
 
 def main():

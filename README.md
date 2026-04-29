@@ -424,6 +424,83 @@ docker run \
   mcp-gsc
 ```
 
+### Vercel — Remote MCP for a Claude organization
+
+Deploy this server as a Vercel Function and register it as a custom MCP
+connector in your Claude organization. Tokens for one or more linked Google
+accounts are stored in **Vercel KV (Upstash Redis)** and shared across the org —
+anyone with the connector can query GSC for any linked account, and anyone can
+add a new account by visiting the OAuth start URL.
+
+**One-time external setup**
+
+1. **Google Cloud Console**
+   - Enable the **Google Search Console API**.
+   - APIs & Services → Credentials → Create Credentials → **OAuth client ID** → **Web application** (NOT Desktop).
+   - Authorized redirect URIs: `https://<your-vercel-domain>/api/oauth/callback`.
+   - OAuth consent screen scope: `https://www.googleapis.com/auth/webmasters`.
+   - While the app is in "Testing" status, add each Google email you'll link as a test user.
+2. **Vercel project**
+   - Import this repo into Vercel.
+   - Add the **Vercel KV** integration (auto-provisions `KV_REST_API_URL` and `KV_REST_API_TOKEN`).
+   - Set the env vars in the table below and deploy.
+3. **Claude organization**
+   - Admin → Connectors → Add custom MCP server.
+   - URL: `https://<your-vercel-domain>/api/mcp`
+   - Auth: bearer token = `MCP_BEARER_TOKEN`.
+
+**Required Vercel environment variables**
+
+| Variable | Purpose |
+|---|---|
+| `MCP_TRANSPORT=vercel` | Switches `gsc_server.py` to KV-backed auth (skips local-disk init) |
+| `GOOGLE_CLIENT_ID` | Web-application OAuth Client ID |
+| `GOOGLE_CLIENT_SECRET` | Web-application OAuth Client secret |
+| `OAUTH_REDIRECT_URI` | `https://<domain>/api/oauth/callback` (must match GCP exactly) |
+| `MCP_BEARER_TOKEN` | Random 32+ character token; share with the Claude connector |
+| `KV_REST_API_URL` | Auto-set by Vercel KV |
+| `KV_REST_API_TOKEN` | Auto-set by Vercel KV |
+| `GSC_DATA_STATE` | Optional — `all` (default) or `final` |
+| `GSC_ALLOW_DESTRUCTIVE` | Optional — `true` to enable add/delete tools |
+
+Do **not** set `GSC_OAUTH_CLIENT_SECRETS_FILE` or `GSC_CREDENTIALS_PATH` on Vercel.
+
+**Linking Google accounts**
+
+After deploying, anyone in the org can add a Google account by visiting:
+
+```
+https://<your-vercel-domain>/api/oauth/start
+```
+
+The flow redirects to Google, asks for consent, then stores the resulting
+refresh token in Vercel KV under that account's email. Repeat for as many
+Google accounts as you want in the shared pool.
+
+To check which accounts are linked:
+
+```bash
+curl -H "Authorization: Bearer $MCP_BEARER_TOKEN" https://<your-vercel-domain>/api/accounts
+```
+
+**Using the connector in Claude**
+
+Tools accept an optional `account` parameter (the linked Google email). If
+omitted, the server uses the first linked account / a default. From Claude:
+
+> Use `list_linked_accounts` to see which Google accounts are linked, then
+> `list_properties account="alice@example.com"` to see her GSC sites.
+
+**Security notes**
+
+- Linked tokens are **shared across all org users** — don't link Google
+  accounts whose Search Console data shouldn't be org-wide.
+- The MCP endpoint is bearer-protected. The `/api/oauth/start` URL is public by
+  design (so anyone in the org can add a new account); treat it as semi-public
+  and rotate `MCP_BEARER_TOKEN` if the URL leaks.
+- Vercel Hobby tier caps function duration at 60s. Long `batch_url_inspection`
+  calls over many URLs may hit that limit; upgrade to Pro for headroom.
+
 ---
 
 ## Related Tools

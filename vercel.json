@@ -1,0 +1,9 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "api/mcp.py": { "runtime": "python3.11", "memory": 1024, "maxDuration": 60 },
+    "api/oauth/start.py": { "runtime": "python3.11", "memory": 256, "maxDuration": 10 },
+    "api/oauth/callback.py": { "runtime": "python3.11", "memory": 256, "maxDuration": 10 },
+    "api/accounts.py": { "runtime": "python3.11", "memory": 256, "maxDuration": 10 }
+  }
+}

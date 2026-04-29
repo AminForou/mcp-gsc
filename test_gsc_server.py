@@ -776,5 +776,170 @@ class TestStdoutClean(unittest.TestCase):
         self.assertEqual(stdout_output, "", f"Unexpected stdout: {stdout_output!r}")
 
 
+# ---------------------------------------------------------------------------
+# TestVercelBranch — covers the KV-backed multi-account flow
+# ---------------------------------------------------------------------------
+
+def _load_vercel_module(env_overrides: dict | None = None):
+    """Reload gsc_server with MCP_TRANSPORT=vercel so RUNNING_ON_VERCEL is True."""
+    env = {
+        "MCP_TRANSPORT": "vercel",
+        "GSC_DATA_STATE": "all",
+        "GSC_ALLOW_DESTRUCTIVE": "false",
+        **(env_overrides or {}),
+    }
+    with patch.dict(os.environ, env, clear=False):
+        if "gsc_server" in sys.modules:
+            del sys.modules["gsc_server"]
+        # lib.token_store reads KV env vars at call time, so we don't need to
+        # set them here unless a test exercises the network path.
+        import gsc_server as mod
+    return mod
+
+
+class TestVercelBranch(unittest.TestCase):
+
+    def test_running_on_vercel_skips_filesystem_init(self):
+        mod = _load_vercel_module()
+        self.assertTrue(mod.RUNNING_ON_VERCEL)
+        # Filesystem-derived globals must NOT be set on Vercel — they default to
+        # empty/None to avoid creating directories on read-only deploys.
+        self.assertEqual(mod.TOKEN_FILE, "")
+        self.assertEqual(mod.OAUTH_CLIENT_SECRETS_FILE, "")
+
+    def test_get_gsc_service_no_accounts_raises_with_oauth_hint(self):
+        mod = _load_vercel_module()
+        fake_store = MagicMock()
+        fake_store.get_default.return_value = None
+        fake_store.list_accounts.return_value = []
+        with patch.dict(sys.modules, {"lib.token_store": fake_store}):
+            with self.assertRaises(FileNotFoundError) as ctx:
+                mod.get_gsc_service()
+        self.assertIn("oauth", str(ctx.exception).lower())
+
+    def test_get_gsc_service_uses_stored_token(self):
+        mod = _load_vercel_module()
+        token_info = {
+            "token": "access",
+            "refresh_token": "refresh",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "client_id": "id",
+            "client_secret": "secret",
+            "scopes": mod.SCOPES,
+        }
+        fake_store = MagicMock()
+        fake_store.get_default.return_value = "alice@example.com"
+        fake_store.get_token.return_value = token_info
+
+        mock_creds = MagicMock()
+        mock_creds.valid = True
+
+        with patch.dict(sys.modules, {"lib.token_store": fake_store}), \
+             patch("gsc_server.Credentials.from_authorized_user_info", return_value=mock_creds), \
+             patch("gsc_server.build", return_value=MagicMock()) as mock_build:
+            service = mod.get_gsc_service()
+
+        self.assertIsNotNone(service)
+        fake_store.get_token.assert_called_once_with("alice@example.com")
+        mock_build.assert_called_once()
+
+    def test_get_gsc_service_explicit_account_overrides_default(self):
+        mod = _load_vercel_module()
+        fake_store = MagicMock()
+        fake_store.get_token.return_value = {"token": "t", "refresh_token": "r",
+                                             "token_uri": "x", "client_id": "i",
+                                             "client_secret": "s", "scopes": mod.SCOPES}
+        mock_creds = MagicMock(valid=True)
+        with patch.dict(sys.modules, {"lib.token_store": fake_store}), \
+             patch("gsc_server.Credentials.from_authorized_user_info", return_value=mock_creds), \
+             patch("gsc_server.build", return_value=MagicMock()):
+            mod.get_gsc_service("bob@example.com")
+        fake_store.get_token.assert_called_once_with("bob@example.com")
+        fake_store.get_default.assert_not_called()
+
+
+class TestVercelTools(unittest.IsolatedAsyncioTestCase):
+
+    async def test_list_linked_accounts_returns_pool(self):
+        mod = _load_vercel_module()
+        fake_store = MagicMock()
+        fake_store.list_accounts.return_value = ["a@x.com", "b@x.com"]
+        fake_store.get_default.return_value = "a@x.com"
+        with patch.dict(sys.modules, {"lib.token_store": fake_store}):
+            result = await mod.list_linked_accounts()
+        payload = json.loads(result)
+        self.assertEqual(payload["accounts"], ["a@x.com", "b@x.com"])
+        self.assertEqual(payload["default"], "a@x.com")
+        self.assertEqual(payload["count"], 2)
+
+    async def test_reauthenticate_returns_oauth_start_url(self):
+        mod = _load_vercel_module()
+        with patch.dict(os.environ,
+                        {"OAUTH_REDIRECT_URI": "https://x.vercel.app/api/oauth/callback"}):
+            result = await mod.reauthenticate()
+        self.assertIn("https://x.vercel.app/api/oauth/start", result)
+
+
+# ---------------------------------------------------------------------------
+# TestAuthGuard — bearer-token middleware for the MCP endpoint
+# ---------------------------------------------------------------------------
+
+class TestAuthGuard(unittest.IsolatedAsyncioTestCase):
+
+    async def _call(self, app, headers):
+        scope = {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/mcp",
+            "headers": [(k.encode(), v.encode()) for k, v in headers.items()],
+        }
+        sent = []
+
+        async def send(message):
+            sent.append(message)
+
+        async def receive():
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        await app(scope, receive, send)
+        status = next(m["status"] for m in sent if m["type"] == "http.response.start")
+        return status, sent
+
+    async def test_rejects_missing_bearer(self):
+        from lib.auth_guard import bearer_required
+        with patch.dict(os.environ, {"MCP_BEARER_TOKEN": "secret"}):
+            inner = MagicMock()
+            app = bearer_required(inner)
+            status, _ = await self._call(app, {})
+            self.assertEqual(status, 401)
+            inner.assert_not_called()
+
+    async def test_rejects_wrong_bearer(self):
+        from lib.auth_guard import bearer_required
+        with patch.dict(os.environ, {"MCP_BEARER_TOKEN": "secret"}):
+            inner = MagicMock()
+            app = bearer_required(inner)
+            status, _ = await self._call(app, {"authorization": "Bearer wrong"})
+            self.assertEqual(status, 401)
+            inner.assert_not_called()
+
+    async def test_accepts_correct_bearer(self):
+        from lib.auth_guard import bearer_required
+
+        called = {"hit": False}
+
+        async def inner(scope, receive, send):
+            called["hit"] = True
+            await send({"type": "http.response.start", "status": 200,
+                        "headers": [(b"content-type", b"text/plain")]})
+            await send({"type": "http.response.body", "body": b"ok"})
+
+        with patch.dict(os.environ, {"MCP_BEARER_TOKEN": "secret"}):
+            app = bearer_required(inner)
+            status, _ = await self._call(app, {"authorization": "Bearer secret"})
+            self.assertEqual(status, 200)
+            self.assertTrue(called["hit"])
+
+
 if __name__ == "__main__":
     unittest.main()
