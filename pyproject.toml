@@ -19,6 +19,7 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules"
 ]
 dependencies = [
+    "fastmcp>=3.2.0",
     "google-api-python-client>=2.163.0",
     "google-auth-httplib2>=0.2.0",
     "google-auth-oauthlib>=1.2.1",
