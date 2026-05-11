@@ -386,9 +386,11 @@ Make sure you are using the **absolute path** to your credentials file — not a
 client_secrets.json                              ❌
 ```
 
-### MCP only works in Claude Desktop app, not the website
+### Using MCP with claude.ai (web) vs Claude Desktop
 
-The MCP server runs locally on your machine. It only works in the **Claude Desktop app** (downloaded from [claude.ai/download](https://claude.ai/download)), not in the claude.ai browser interface.
+**Local setup (stdio):** Only works in the Claude Desktop app — the server runs on your machine, and the web interface can't reach it.
+
+**Cloud Run setup:** Works directly in **claude.ai** — add your Cloud Run URL as a custom integration under Settings → Integrations. No Desktop app needed. See the [Cloud Run Deployment](#cloud-run-deployment-remote--claudeai) section above.
 
 ### AI Client Configuration Issues
 
