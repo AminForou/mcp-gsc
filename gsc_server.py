@@ -20,10 +20,38 @@ from googleapiclient.errors import HttpError
 # fatal error, so this prevents false crashes.
 logging.getLogger("googleapiclient.discovery_cache").setLevel(logging.ERROR)
 
-# MCP
-from mcp.server.fastmcp import FastMCP
+# Use the standalone fastmcp package (3.x) which includes GoogleProvider and
+# streamable-http OAuth proxy support. Falls back gracefully for local/stdio use.
+from fastmcp import FastMCP
 
-mcp = FastMCP("gsc-server")
+# ---------------------------------------------------------------------------
+# Remote OAuth proxy mode (Cloud Run / claude.ai)
+# When GSC_MCP_OAUTH_CLIENT_ID + GSC_MCP_OAUTH_CLIENT_SECRET are set, the
+# server runs as a streamable-HTTP server with FastMCP's built-in Google OAuth
+# proxy. The MCP client (e.g. claude.ai) drives the browser login — no local
+# token files are needed on the server side.
+# ---------------------------------------------------------------------------
+_GSC_MCP_OAUTH_CLIENT_ID = os.environ.get("GSC_MCP_OAUTH_CLIENT_ID")
+_GSC_MCP_OAUTH_CLIENT_SECRET = os.environ.get("GSC_MCP_OAUTH_CLIENT_SECRET")
+_GSC_MCP_BASE_URL = os.environ.get("GSC_MCP_BASE_URL", "http://localhost:8080")
+REMOTE_OAUTH_MODE = bool(_GSC_MCP_OAUTH_CLIENT_ID and _GSC_MCP_OAUTH_CLIENT_SECRET)
+
+if REMOTE_OAUTH_MODE:
+    from fastmcp.server.auth.providers.google import GoogleProvider
+    _auth = GoogleProvider(
+        client_id=_GSC_MCP_OAUTH_CLIENT_ID,
+        client_secret=_GSC_MCP_OAUTH_CLIENT_SECRET,
+        base_url=_GSC_MCP_BASE_URL,
+        required_scopes=[
+            "openid",
+            "https://www.googleapis.com/auth/userinfo.email",
+            "https://www.googleapis.com/auth/userinfo.profile",
+            "https://www.googleapis.com/auth/webmasters",
+        ],
+    )
+    mcp = FastMCP("gsc-server", auth=_auth)
+else:
+    mcp = FastMCP("gsc-server")
 
 def _expand_path(path: Optional[str]) -> Optional[str]:
     """Expand ``~`` and environment variables in a path, returning None for empty input.
@@ -90,11 +118,32 @@ DATA_STATE = _raw_data_state
 
 SCOPES = ["https://www.googleapis.com/auth/webmasters"]
 
+def _get_gsc_service_remote():
+    """
+    Returns an authorized Search Console service using the Google OAuth token
+    that FastMCP's OAuth proxy obtained on behalf of the current MCP session.
+    Only called when REMOTE_OAUTH_MODE is True.
+    """
+    from fastmcp.server.dependencies import get_access_token
+    token_obj = get_access_token()
+    if not token_obj or not token_obj.token:
+        raise RuntimeError(
+            "No authenticated session found. "
+            "Please authenticate via your MCP client (e.g. reconnect the claude.ai connector)."
+        )
+    creds = Credentials(token=token_obj.token)
+    return build("searchconsole", "v1", credentials=creds, cache_discovery=False)
+
+
 def get_gsc_service():
     """
     Returns an authorized Search Console service object.
-    First tries OAuth authentication, then falls back to service account.
+    In remote OAuth proxy mode, uses the token from the FastMCP session.
+    In local mode, tries OAuth authentication first, then service account.
     """
+    if REMOTE_OAUTH_MODE:
+        return _get_gsc_service_remote()
+
     # Fail-fast if credential env vars are set but point to files that don't exist.
     # Without this, a typo'd or uvx-incompatible path would silently fall through to
     # SCRIPT_DIR/cwd fallbacks (which don't work under uvx) and emit a misleading
@@ -1617,9 +1666,17 @@ Amin combines technical SEO knowledge with programming skills to create innovati
 async def reauthenticate() -> str:
     """
     Perform a logout and new login sequence.
-    Deletes the current OAuth token file and triggers the browser authentication flow.
-    Useful when you need to switch to a different Google account.
+    In local mode: deletes the cached token and opens a browser login window.
+    In remote/Cloud Run mode: instructs the user to re-trigger OAuth via their MCP client.
     """
+    if REMOTE_OAUTH_MODE:
+        return (
+            "This server is running in remote OAuth proxy mode. "
+            "Reauthentication is handled by your MCP client, not the server. "
+            "To switch accounts or refresh your session in claude.ai: "
+            "disconnect the custom connector and reconnect it — this re-triggers the Google OAuth flow."
+        )
+
     try:
         # Delete existing token to force re-authentication
         if os.path.exists(TOKEN_FILE):
@@ -1657,7 +1714,14 @@ async def reauthenticate() -> str:
 
 
 def main():
-    """Entry point for the MCP server. Supports stdio (default) and SSE transports."""
+    """Entry point for the MCP server. Supports stdio, SSE, and streamable-HTTP transports."""
+    if REMOTE_OAUTH_MODE:
+        # Cloud Run sets PORT automatically; default to 8080 for local Docker runs.
+        port = int(os.environ.get("PORT", "8080"))
+        mcp.run(transport="streamable-http", port=port, host="0.0.0.0")
+        return
+
+    # Local mode: stdio (default) or SSE for Docker/network use.
     transport = os.environ.get("MCP_TRANSPORT", "stdio").lower()
     host = os.environ.get("MCP_HOST", "127.0.0.1")
     try:

@@ -8,5 +8,10 @@ RUN uv sync --no-cache --no-install-project
 # Copy application code
 COPY gsc_server.py .
 
-# Default to stdio transport; override with MCP_TRANSPORT=sse for remote/network use
+# Cloud Run injects PORT automatically (default 8080).
+# When GSC_MCP_OAUTH_CLIENT_ID is set the server binds to $PORT on 0.0.0.0
+# in streamable-HTTP + OAuth proxy mode.
+# For plain SSE/local Docker runs, set MCP_TRANSPORT=sse and MCP_PORT instead.
+ENV PORT=8080
+
 CMD ["uv", "run", "--no-sync", "python", "gsc_server.py"]

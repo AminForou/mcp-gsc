@@ -314,6 +314,10 @@ If you see your properties — it's working. If not, ask: **"Call get_capabiliti
 | `GSC_SKIP_OAUTH` | No | `false` | Set to `"true"` to force service account auth and skip OAuth entirely |
 | `GSC_DATA_STATE` | No | `"all"` | `"all"` matches the GSC dashboard. `"final"` returns only confirmed data (2–3 day lag). |
 | `GSC_ALLOW_DESTRUCTIVE` | No | `false` | Set to `"true"` to enable add/delete site and delete sitemap tools |
+| `GSC_MCP_OAUTH_CLIENT_ID` | Cloud Run only | — | OAuth 2.0 Web Application client ID — activates remote OAuth proxy mode |
+| `GSC_MCP_OAUTH_CLIENT_SECRET` | Cloud Run only | — | OAuth 2.0 Web Application client secret |
+| `GSC_MCP_BASE_URL` | Cloud Run only | `http://localhost:8080` | Public URL of your Cloud Run service (e.g. `https://mcp-gsc-xxx-uc.a.run.app`) |
+| `PORT` | Cloud Run only | `8080` | Port to bind in remote mode (set automatically by Cloud Run) |
 
 ---
 
@@ -400,6 +404,63 @@ By default, `add_site`, `delete_site`, and `delete_sitemap` are disabled. To ena
 
 ```json
 "GSC_ALLOW_DESTRUCTIVE": "true"
+```
+
+---
+
+## Cloud Run Deployment (Remote / claude.ai)
+
+Deploy to Google Cloud Run to use this server from **claude.ai** (or any remote MCP client) without running anything locally. FastMCP's built-in OAuth proxy handles the browser login flow — no token files, no local server needed.
+
+### Prerequisites
+
+1. **Google Cloud project** with the [Search Console API enabled](https://console.cloud.google.com/apis/library/searchconsole.googleapis.com)
+2. **OAuth 2.0 Web Application** credentials (not Desktop app):
+   - Go to [Credentials](https://console.cloud.google.com/apis/credentials) → Create Credentials → OAuth client ID → **Web application**
+   - Under **Authorized redirect URIs**, add: `https://YOUR-CLOUD-RUN-URL.a.run.app/auth/callback`
+   - Download the client ID and secret (you'll use them as env vars — do not download a JSON file for this)
+3. **Docker + gcloud CLI** installed and authenticated (`gcloud auth login`)
+
+### Deploy
+
+```bash
+# 1. Build and push the image (replace PROJECT_ID and REGION)
+gcloud builds submit \
+  --tag REGION-docker.pkg.dev/PROJECT_ID/mcp-servers/mcp-gsc:latest \
+  /path/to/mcp-gsc
+
+# 2. Deploy to Cloud Run
+gcloud run deploy mcp-gsc \
+  --image REGION-docker.pkg.dev/PROJECT_ID/mcp-servers/mcp-gsc:latest \
+  --platform managed \
+  --region REGION \
+  --allow-unauthenticated \
+  --set-env-vars "\
+GSC_MCP_OAUTH_CLIENT_ID=YOUR_CLIENT_ID,\
+GSC_MCP_OAUTH_CLIENT_SECRET=YOUR_CLIENT_SECRET,\
+GSC_MCP_BASE_URL=https://mcp-gsc-HASH-REGION.a.run.app"
+```
+
+> **Two-step base URL:** On the very first deploy you won't know the URL yet. Deploy once without `GSC_MCP_BASE_URL` to get the URL, then redeploy with it set. Alternatively, use `--no-traffic` on the first deploy.
+
+### Add to claude.ai
+
+1. Go to **claude.ai → Settings → Integrations → Add custom integration**
+2. Enter the connector URL: `https://YOUR-CLOUD-RUN-URL.a.run.app/mcp`
+3. Click **Connect** — Claude triggers the Google OAuth flow in your browser
+4. Sign in with the Google account that has access to your GSC properties
+5. Ask Claude: *"List my GSC properties"*
+
+### Add to Claude Desktop (remote)
+
+```json
+{
+  "mcpServers": {
+    "gscServer": {
+      "url": "https://YOUR-CLOUD-RUN-URL.a.run.app/mcp"
+    }
+  }
+}
 ```
 
 ---
