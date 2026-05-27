@@ -6,7 +6,7 @@ COPY pyproject.toml README.md ./
 RUN uv sync --no-cache --no-install-project
 
 # Copy application code
-COPY gsc_server.py .
+COPY gsc_server.py bearer_context.py ./
 
 # Default to stdio transport; override with MCP_TRANSPORT=sse for remote/network use
 CMD ["uv", "run", "--no-sync", "python", "gsc_server.py"]

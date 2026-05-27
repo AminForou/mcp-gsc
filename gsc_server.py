@@ -93,8 +93,41 @@ SCOPES = ["https://www.googleapis.com/auth/webmasters"]
 def get_gsc_service():
     """
     Returns an authorized Search Console service object.
-    First tries OAuth authentication, then falls back to service account.
+
+    Authentication mode is selected by the ``GSC_AUTH_MODE`` env var:
+
+    * ``bearer`` — multi-tenant. Builds credentials from the per-request
+      ``Authorization: Bearer <access_token>`` header captured by
+      :class:`bearer_context.BearerCaptureMiddleware` (registered in SSE mode).
+      The MCP server holds no credentials of its own; each request calls
+      Google as the user that originated it. Matches Google's hosted MCP
+      pattern (drivemcp.googleapis.com etc.) — suitable when an upstream MCP
+      client (LibreChat, etc.) already performs OAuth per user and forwards
+      the access token.
+    * unset / anything else — single-tenant. First tries OAuth authentication,
+      then falls back to service account (the original behaviour).
     """
+    # Bearer (multi-tenant) mode: per-request Google access token from the
+    # Authorization header — no on-disk credentials needed.
+    if os.environ.get("GSC_AUTH_MODE", "").lower() == "bearer":
+        from bearer_context import current_bearer
+        from google.oauth2.credentials import Credentials as OAuthCredentials
+
+        token = current_bearer.get()
+        if not token:
+            # Mirrors a 401 to the MCP client so it can trigger its OAuth flow
+            # (e.g. LibreChat with `requiresOAuth: true`).
+            raise PermissionError(
+                "GSC_AUTH_MODE=bearer but no Authorization: Bearer <token> on "
+                "the incoming MCP request. Either the MCP client did not "
+                "forward an OAuth access token, or it sent the request before "
+                "completing the OAuth flow."
+            )
+        creds = OAuthCredentials(token=token)
+        return build(
+            "searchconsole", "v1", credentials=creds, cache_discovery=False
+        )
+
     # Fail-fast if credential env vars are set but point to files that don't exist.
     # Without this, a typo'd or uvx-incompatible path would silently fall through to
     # SCRIPT_DIR/cwd fallbacks (which don't work under uvx) and emit a misleading
@@ -1668,7 +1701,33 @@ def main():
     if transport == "stdio":
         mcp.run(transport="stdio")
     elif transport in {"sse", "http"}:
-        mcp.run(transport="sse", host=host, port=port)
+        # FastMCP.run() no longer accepts host/port kwargs in newer mcp SDK;
+        # set them on settings before calling run.
+        mcp.settings.host = host
+        mcp.settings.port = port
+        # mcp SDK >=1.27 enables DNS-rebinding protection with a Host allowlist
+        # of 127.0.0.1/localhost only. SSE is documented for remote/Docker use
+        # (MCP_HOST=0.0.0.0), where Host headers like gsc-mcp:3001 fail the
+        # allowlist and return HTTP 421 Misdirected Request — the operator has
+        # already opted into remote binding via MCP_HOST, so disable the check.
+        try:
+            mcp.settings.transport_security.enable_dns_rebinding_protection = False
+        except Exception:
+            pass
+
+        # Multi-tenant bearer mode: install a Starlette middleware on the SSE
+        # app that captures each request's Authorization: Bearer <token> into
+        # a ContextVar, then run uvicorn directly. See bearer_context.py and
+        # get_gsc_service().
+        if os.environ.get("GSC_AUTH_MODE", "").lower() == "bearer":
+            import uvicorn
+            from bearer_context import BearerCaptureMiddleware
+
+            app = mcp.sse_app()
+            app.add_middleware(BearerCaptureMiddleware)
+            uvicorn.run(app, host=host, port=port)
+        else:
+            mcp.run(transport="sse")
     else:
         raise ValueError(
             f"Unknown MCP_TRANSPORT '{transport}'. "
