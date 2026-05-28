@@ -1,9 +1,9 @@
-"""Per-request bearer-token capture for multi-tenant `GSC_AUTH_MODE=bearer`.
+"""Per-request bearer-token capture for multi-tenant ``GSC_AUTH_MODE=bearer``.
 
 When the env var ``GSC_AUTH_MODE=bearer`` is set, the SSE/streamable-http
 transport installs :class:`BearerCaptureMiddleware`, which extracts the
 ``Authorization: Bearer <token>`` header from each incoming request into a
-:class:`contextvars.ContextVar`.  ``get_gsc_service()`` then builds Google API
+:class:`contextvars.ContextVar`. ``get_gsc_service()`` then builds Google API
 credentials from that per-request token, so the server calls Search Console
 as the *user who made the MCP request* rather than as a single shared
 identity.
@@ -15,14 +15,17 @@ or on-disk refresh token required on the server side.
 
 Single-tenant modes (OAuth-on-disk, service account) are unchanged and remain
 the default when ``GSC_AUTH_MODE`` is unset.
+
+NOTE: This is implemented as a **pure ASGI middleware** rather than subclassing
+Starlette's :class:`BaseHTTPMiddleware`. ``BaseHTTPMiddleware`` buffers the
+response body, which breaks **streaming SSE responses** with an
+``AssertionError: Unexpected message`` from ``body_stream`` — exactly what
+FastMCP's SSE endpoint serves. The pure ASGI form does not touch the response
+stream at all.
 """
 
 from contextvars import ContextVar
 from typing import Optional
-
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.requests import Request
-from starlette.responses import Response
 
 current_bearer: ContextVar[Optional[str]] = ContextVar(
     "current_bearer", default=None
@@ -37,17 +40,30 @@ def _extract_bearer(header_value: str) -> Optional[str]:
     return token or None
 
 
-class BearerCaptureMiddleware(BaseHTTPMiddleware):
-    """Captures ``Authorization: Bearer <token>`` into :data:`current_bearer`.
+class BearerCaptureMiddleware:
+    """Pure ASGI middleware that captures ``Authorization: Bearer <token>``
+    into :data:`current_bearer` for the duration of each HTTP request.
 
-    The token is scoped to the request via :mod:`contextvars`, so per-request
-    isolation is preserved across concurrent async handlers.
+    Implemented as a pure ASGI middleware (not ``BaseHTTPMiddleware``) so it
+    is safe in front of streaming responses such as the FastMCP SSE endpoint.
     """
 
-    async def dispatch(self, request: Request, call_next) -> Response:
-        token = _extract_bearer(request.headers.get("authorization", ""))
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            # WebSocket / lifespan: pass through unchanged.
+            await self.app(scope, receive, send)
+            return
+
+        # ASGI headers are list[(bytes, bytes)]; convert lowercase keys to dict.
+        headers = {k.decode("latin-1").lower(): v for k, v in scope.get("headers", [])}
+        auth_header = headers.get("authorization", b"").decode("latin-1")
+        token = _extract_bearer(auth_header)
+
         reset_token = current_bearer.set(token)
         try:
-            return await call_next(request)
+            await self.app(scope, receive, send)
         finally:
             current_bearer.reset(reset_token)
