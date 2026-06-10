@@ -22,9 +22,10 @@ from unittest.mock import MagicMock, patch, PropertyMock
 def _load_module(env_overrides: dict | None = None):
     """Import gsc_server with a fresh environment."""
     env = {
-        "GSC_SKIP_OAUTH": "true",          # prevent live OAuth attempts by default
+        "GSC_SKIP_OAUTH": "true",
         "GSC_DATA_STATE": "all",
         "GSC_ALLOW_DESTRUCTIVE": "false",
+        "GSC_OAUTH_MODE": "",
         **(env_overrides or {}),
     }
     with patch.dict(os.environ, env, clear=False):
@@ -727,11 +728,12 @@ class TestReauthenticate(unittest.IsolatedAsyncioTestCase):
             mock_creds = MagicMock()
             mock_creds.to_json.return_value = '{"token": "new"}'
 
+            mock_flow = MagicMock()
+            mock_flow.run_local_server.return_value = mock_creds
+
             with patch.object(mod, "TOKEN_FILE", token_path), \
                  patch.object(mod, "OAUTH_CLIENT_SECRETS_FILE", secrets_path), \
-                 patch("gsc_server.InstalledAppFlow") as mock_flow_cls:
-                mock_flow = MagicMock()
-                mock_flow.run_local_server.return_value = mock_creds
+                 patch.object(mod, "InstalledAppFlow") as mock_flow_cls:
                 mock_flow_cls.from_client_secrets_file.return_value = mock_flow
                 result = await mod.reauthenticate()
 
@@ -774,6 +776,171 @@ class TestStdoutClean(unittest.TestCase):
 
         stdout_output = captured.getvalue()
         self.assertEqual(stdout_output, "", f"Unexpected stdout: {stdout_output!r}")
+
+
+# ---------------------------------------------------------------------------
+# TestHeadlessOAuth
+# ---------------------------------------------------------------------------
+
+class TestHeadlessOAuth(unittest.IsolatedAsyncioTestCase):
+
+    def _load_headless_module(self, tmpdir: str):
+        env = {
+            "GSC_SKIP_OAUTH": "false",
+            "GSC_OAUTH_MODE": "headless",
+            "GSC_DATA_STATE": "all",
+            "GSC_ALLOW_DESTRUCTIVE": "false",
+            "GSC_CONFIG_DIR": tmpdir,
+        }
+        with patch.dict(os.environ, env, clear=False):
+            if "gsc_server" in sys.modules:
+                del sys.modules["gsc_server"]
+            import gsc_server as mod
+        return mod
+
+    def _write_secrets(self, tmpdir: str) -> str:
+        secrets_path = os.path.join(tmpdir, "client_secrets.json")
+        with open(secrets_path, "w") as f:
+            json.dump({
+                "installed": {
+                    "client_id": "test-client-id.apps.googleusercontent.com",
+                    "client_secret": "test-client-secret",
+                    "project_id": "test-project",
+                    "auth_uri": "https://accounts.google.com/o/oauth2/v2/auth",
+                    "token_uri": "https://oauth2.googleapis.com/token",
+                    "redirect_uris": ["urn:ietf:wg:oauth:2.0:oob"],
+                }
+            }, f)
+        return secrets_path
+
+    async def test_start_oauth_returns_auth_url(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            secrets_path = self._write_secrets(tmpdir)
+            mod = self._load_headless_module(tmpdir)
+
+            with patch.object(mod, "OAUTH_CLIENT_SECRETS_FILE", secrets_path):
+                result = await mod.start_oauth()
+
+            data = json.loads(result)
+            self.assertEqual(data["status"], "pending")
+            self.assertIn("auth_url", data)
+            self.assertIn("test-client-id", data["auth_url"])
+            self.assertIn("code_challenge", data["auth_url"])
+            self.assertIn("code_challenge_method=S256", data["auth_url"])
+
+    async def test_start_oauth_sets_pending_state(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            secrets_path = self._write_secrets(tmpdir)
+            mod = self._load_headless_module(tmpdir)
+
+            with patch.object(mod, "OAUTH_CLIENT_SECRETS_FILE", secrets_path):
+                await mod.start_oauth()
+
+            self.assertIsNotNone(mod._pending_oauth)
+            self.assertIn("code_verifier", mod._pending_oauth)
+            self.assertIn("client_id", mod._pending_oauth)
+            self.assertIn("client_secret", mod._pending_oauth)
+
+    async def test_start_oauth_rejects_local_mode(self):
+        mod = _load_module({"GSC_OAUTH_MODE": "local"})
+        result = await mod.start_oauth()
+        self.assertIn("GSC_OAUTH_MODE=headless", result)
+
+    async def test_complete_oauth_no_pending_flow(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mod = self._load_headless_module(tmpdir)
+            mod._pending_oauth = None
+            result = await mod.complete_oauth("some-code")
+            self.assertIn("No pending OAuth flow", result)
+
+    async def test_complete_oauth_exchanges_code(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mod = self._load_headless_module(tmpdir)
+            token_path = os.path.join(tmpdir, "token.json")
+            mod._pending_oauth = {
+                "client_id": "test.apps.googleusercontent.com",
+                "client_secret": "test-client-secret",
+                "redirect_uri": "urn:ietf:wg:oauth:2.0:oob",
+                "code_verifier": "test-verifier",
+            }
+
+            token_response = {
+                "access_token": "ya29.test-access",
+                "refresh_token": "1//test-refresh",
+                "token_uri": "https://oauth2.googleapis.com/token",
+                "client_id": "test.apps.googleusercontent.com",
+                "scopes": ["https://www.googleapis.com/auth/webmasters"],
+                "expiry": "2099-01-01T00:00:00Z",
+            }
+
+            mock_resp = MagicMock()
+            mock_resp.read.return_value = json.dumps(token_response).encode("utf-8")
+            mock_resp.__enter__ = lambda s: s
+            mock_resp.__exit__ = MagicMock(return_value=False)
+
+            with patch.object(mod, "TOKEN_FILE", token_path), \
+                 patch("urllib.request.urlopen", return_value=mock_resp):
+                result = await mod.complete_oauth("test-auth-code")
+
+            data = json.loads(result)
+            self.assertEqual(data["status"], "success")
+            self.assertTrue(os.path.exists(token_path))
+            self.assertIsNone(mod._pending_oauth)
+
+    async def test_complete_oauth_rejects_local_mode(self):
+        mod = _load_module({"GSC_OAUTH_MODE": "local"})
+        result = await mod.complete_oauth("some-code")
+        self.assertIn("GSC_OAUTH_MODE=headless", result)
+
+    async def test_get_gsc_service_oauth_headless_raises_without_token(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mod = self._load_headless_module(tmpdir)
+            secrets_path = self._write_secrets(tmpdir)
+
+            with patch.object(mod, "TOKEN_FILE", os.path.join(tmpdir, "no_token.json")), \
+                 patch.object(mod, "OAUTH_CLIENT_SECRETS_FILE", secrets_path):
+                with self.assertRaises(RuntimeError) as ctx:
+                    mod.get_gsc_service_oauth()
+                self.assertIn("start_oauth", str(ctx.exception))
+
+    async def test_reauthenticate_headless_delegates_to_start_oauth(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            secrets_path = self._write_secrets(tmpdir)
+            token_path = os.path.join(tmpdir, "token.json")
+            open(token_path, "w").write('{"old": "token"}')
+            mod = self._load_headless_module(tmpdir)
+
+            with patch.object(mod, "TOKEN_FILE", token_path), \
+                 patch.object(mod, "OAUTH_CLIENT_SECRETS_FILE", secrets_path):
+                result = await mod.reauthenticate()
+
+            data = json.loads(result)
+            self.assertEqual(data["status"], "pending")
+            self.assertIn("auth_url", data)
+            self.assertFalse(os.path.exists(token_path))
+
+    async def test_pkce_verifier_and_challenge(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mod = self._load_headless_module(tmpdir)
+            verifier = mod._generate_pkce_verifier()
+            self.assertGreaterEqual(len(verifier), 43)
+
+            challenge = mod._generate_pkce_challenge(verifier)
+            self.assertNotEqual(verifier, challenge)
+            self.assertGreater(len(challenge), 0)
+
+    async def test_oauth_mode_invalid_raises(self):
+        with self.assertRaises(ValueError) as ctx:
+            _load_module({"GSC_OAUTH_MODE": "bogus"})
+        self.assertIn("GSC_OAUTH_MODE", str(ctx.exception))
+
+    async def test_oauth_mode_default_is_local(self):
+        env = {"GSC_SKIP_OAUTH": "true", "GSC_DATA_STATE": "all", "GSC_ALLOW_DESTRUCTIVE": "false"}
+        with patch.dict(os.environ, env, clear=True):
+            if "gsc_server" in sys.modules:
+                del sys.modules["gsc_server"]
+            import gsc_server as mod
+        self.assertEqual(mod.OAUTH_MODE, "local")
 
 
 if __name__ == "__main__":
