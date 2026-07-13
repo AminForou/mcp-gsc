@@ -30,6 +30,12 @@ from mcp.types import ToolAnnotations
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+from embedded_oauth import (
+    EmbeddedOAuthConfig,
+    EmbeddedOAuthTokenVerifier,
+    load_embedded_oauth_config,
+    register_embedded_oauth_routes,
+)
 import gsc_server as upstream
 
 LOGGER = logging.getLogger("mp-gsc-mcp.chatgpt")
@@ -217,9 +223,11 @@ def _security_meta(auth_enabled: bool, scopes: list[str]) -> dict[str, Any]:
 
 def build_server() -> FastMCP:
     auth_mode = os.getenv("MCP_AUTH_MODE", "oauth").strip().lower()
-    if auth_mode not in {"oauth", "none"}:
-        raise RuntimeError("MCP_AUTH_MODE must be 'oauth' or 'none'")
-    auth_enabled = auth_mode == "oauth"
+    if auth_mode not in {"oauth", "external_jwt", "none"}:
+        raise RuntimeError(
+            "MCP_AUTH_MODE must be 'oauth', 'external_jwt', or 'none'"
+        )
+    auth_enabled = auth_mode != "none"
 
     host = os.getenv("MCP_HOST", "0.0.0.0")
     try:
@@ -236,34 +244,50 @@ def build_server() -> FastMCP:
         raise RuntimeError("MCP_REQUIRED_SCOPES must not be empty in OAuth mode")
 
     auth_settings: AuthSettings | None = None
-    token_verifier: JwtTokenVerifier | None = None
+    token_verifier: Any | None = None
+    embedded_oauth_config: EmbeddedOAuthConfig | None = None
     public_url: str | None = None
 
     if auth_enabled:
         public_url = _normalise_public_url(_required_env("MCP_PUBLIC_BASE_URL"))
-        issuer = _required_env("MCP_OAUTH_ISSUER")
-        audience = os.getenv("MCP_OAUTH_AUDIENCE", public_url).strip()
-        jwks_uri = _required_env("MCP_OAUTH_JWKS_URI")
-        algorithms = _csv_env("MCP_OAUTH_ALGORITHMS", "RS256")
-        if not algorithms:
-            raise RuntimeError("MCP_OAUTH_ALGORITHMS must not be empty")
+        documentation_url = os.getenv(
+            "MCP_SERVICE_DOCUMENTATION_URL",
+            "https://github.com/ZipSites/mp-gsc-mcp/blob/main/docs/chatgpt-plugin.md",
+        )
 
-        token_verifier = JwtTokenVerifier(
-            issuer=issuer,
-            audience=audience,
-            jwks_uri=jwks_uri,
-            algorithms=algorithms,
-            required_scopes=required_scopes,
-        )
-        auth_settings = AuthSettings(
-            issuer_url=issuer,
-            resource_server_url=public_url,
-            service_documentation_url=os.getenv(
-                "MCP_SERVICE_DOCUMENTATION_URL",
-                "https://github.com/ZipSites/mp-gsc-mcp/blob/main/docs/chatgpt-plugin.md",
-            ),
-            required_scopes=required_scopes,
-        )
+        if auth_mode == "oauth":
+            embedded_oauth_config = load_embedded_oauth_config(
+                public_url=public_url,
+                required_scopes=required_scopes,
+            )
+            token_verifier = EmbeddedOAuthTokenVerifier(embedded_oauth_config)
+            auth_settings = AuthSettings(
+                issuer_url=embedded_oauth_config.issuer_url,
+                resource_server_url=embedded_oauth_config.resource_url,
+                service_documentation_url=documentation_url,
+                required_scopes=required_scopes,
+            )
+        else:
+            issuer = _required_env("MCP_OAUTH_ISSUER")
+            audience = os.getenv("MCP_OAUTH_AUDIENCE", public_url).strip()
+            jwks_uri = _required_env("MCP_OAUTH_JWKS_URI")
+            algorithms = _csv_env("MCP_OAUTH_ALGORITHMS", "RS256")
+            if not algorithms:
+                raise RuntimeError("MCP_OAUTH_ALGORITHMS must not be empty")
+
+            token_verifier = JwtTokenVerifier(
+                issuer=issuer,
+                audience=audience,
+                jwks_uri=jwks_uri,
+                algorithms=algorithms,
+                required_scopes=required_scopes,
+            )
+            auth_settings = AuthSettings(
+                issuer_url=issuer,
+                resource_server_url=audience,
+                service_documentation_url=documentation_url,
+                required_scopes=required_scopes,
+            )
 
     allowed = _allowed_properties(auth_enabled)
     _configure_google_auth()
@@ -318,6 +342,9 @@ def build_server() -> FastMCP:
             allowed_origins=allowed_origins,
         ),
     )
+
+    if embedded_oauth_config is not None:
+        register_embedded_oauth_routes(server, embedded_oauth_config)
 
     meta = _security_meta(auth_enabled, required_scopes)
 
@@ -410,6 +437,7 @@ def build_server() -> FastMCP:
                 "status": "ok",
                 "service": "mp-gsc-mcp",
                 "transport": "streamable-http",
+                "auth_mode": auth_mode,
             }
         )
 
@@ -432,6 +460,11 @@ def build_server() -> FastMCP:
                 "health_endpoint": "/health",
                 "oauth_protected_resource": (
                     "/.well-known/oauth-protected-resource" if auth_enabled else None
+                ),
+                "oauth_authorization_server": (
+                    "/.well-known/oauth-authorization-server"
+                    if auth_mode == "oauth"
+                    else None
                 ),
             }
         )
