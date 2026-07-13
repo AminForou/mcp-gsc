@@ -69,6 +69,11 @@ Never deploy `MCP_AUTH_MODE=none` to a public Cloud Run service.
 
 ## Cloud Run deployment outline
 
+For a production-ready step-by-step flow, use:
+
+- `docs/cloud-run.md`
+- `scripts/deploy-cloud-run.sh`
+
 The Cloud Run service must be publicly reachable at the network layer because
 ChatGPT is the caller. Authentication is enforced by the MCP OAuth middleware.
 Use `--allow-unauthenticated` for Cloud Run ingress and do not confuse that setting

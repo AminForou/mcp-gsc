@@ -443,6 +443,17 @@ docker run \
   mcp-gsc
 ```
 
+### Cloud Run (ChatGPT-Compatible MCP)
+
+This fork also supports ChatGPT-compatible Streamable HTTP transport using
+`chatgpt_server.py` and the `mp-gsc-mcp-http` entrypoint.
+
+Use:
+
+- `docs/cloud-run.md` for setup and IAM guidance
+- `scripts/deploy-cloud-run.sh` for repeatable deployment
+- `docs/chatgpt-plugin.md` for OAuth resource-server contract details
+
 ---
 
 ## Related Tools
