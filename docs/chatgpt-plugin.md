@@ -8,6 +8,7 @@ remains unchanged for local stdio clients.
 | `MCP_AUTH_MODE` | Purpose |
 |---|---|
 | `oauth` | Embedded single-owner OAuth 2.1 authorization-code flow with PKCE `S256` and dynamic client registration. This is the default for the private Cloud Run deployment. |
+| `oauth_local` | Shared-secret JWT validation mode for private deployments without a JWKS-based IdP. |
 | `external_jwt` | Resource-server-only mode for an established IdP that issues JWT access tokens through a JWKS endpoint. |
 | `none` | Local testing only. Never expose this mode on public Cloud Run ingress. |
 
@@ -51,6 +52,19 @@ MCP_REQUIRED_SCOPES
 OAUTH_ALLOWED_EMAILS
 GSC_ALLOWED_PROPERTIES
 ```
+
+Auth mode options:
+
+- `MCP_AUTH_MODE=oauth` (default embedded authorization server):
+  - Uses `OAUTH_TOKEN_SECRET` and `OAUTH_ADMIN_PASSWORD` (from Secret Manager)
+- `MCP_AUTH_MODE=external_jwt`:
+  - `MCP_OAUTH_ISSUER`
+  - `MCP_OAUTH_JWKS_URI`
+  - Optional: `MCP_OAUTH_AUDIENCE` (defaults to `MCP_PUBLIC_BASE_URL`)
+- `MCP_AUTH_MODE=oauth_local`:
+  - `MCP_OAUTH_TOKEN_SECRET` or `OAUTH_TOKEN_SECRET`
+  - Optional: `MCP_OAUTH_AUDIENCE` (defaults to `MCP_PUBLIC_BASE_URL`)
+  - Optional: `OAUTH_ALLOWED_EMAILS` for email-claim allowlisting
 
 Create and mount these values from Google Secret Manager rather than storing them in
 `.env.chatgpt`:

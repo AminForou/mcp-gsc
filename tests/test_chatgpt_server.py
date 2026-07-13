@@ -63,6 +63,34 @@ class ServerBuildTests(unittest.TestCase):
         self.assertTrue(analytics.annotations.openWorldHint)
         self.assertFalse(analytics.annotations.destructiveHint)
 
+    def test_oauth_local_mode_does_not_require_jwks_or_external_issuer(self) -> None:
+        environment = {
+            "MCP_AUTH_MODE": "oauth_local",
+            "MCP_PUBLIC_BASE_URL": "https://example.run.app",
+            "MCP_OAUTH_AUDIENCE": "https://example.run.app",
+            "MCP_REQUIRED_SCOPES": "gsc.read",
+            "MCP_OAUTH_TOKEN_SECRET": "local-secret-value",
+            "MCP_REQUIRE_PROPERTY_ALLOWLIST": "false",
+            "GSC_GOOGLE_AUTH_MODE": "adc",
+        }
+        with patch.dict(os.environ, environment, clear=False):
+            server = build_server()
+
+        self.assertIsNotNone(server)
+
+    def test_oauth_local_mode_requires_shared_secret(self) -> None:
+        environment = {
+            "MCP_AUTH_MODE": "oauth_local",
+            "MCP_PUBLIC_BASE_URL": "https://example.run.app",
+            "MCP_OAUTH_AUDIENCE": "https://example.run.app",
+            "MCP_REQUIRED_SCOPES": "gsc.read",
+            "MCP_REQUIRE_PROPERTY_ALLOWLIST": "false",
+            "GSC_GOOGLE_AUTH_MODE": "adc",
+        }
+        with patch.dict(os.environ, environment, clear=False):
+            with self.assertRaises(RuntimeError):
+                build_server()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -68,6 +68,14 @@ def _required_env(name: str) -> str:
     return value
 
 
+def _required_env_any(names: list[str]) -> str:
+    for name in names:
+        value = os.getenv(name, "").strip()
+        if value:
+            return value
+    raise RuntimeError(f"One of {', '.join(names)} is required")
+
+
 def _normalise_public_url(value: str) -> str:
     value = value.strip().rstrip("/")
     parsed = urlparse(value)
@@ -154,6 +162,75 @@ class JwtTokenVerifier:
             return None
 
 
+class SharedSecretTokenVerifier:
+    """Verify JWT access tokens signed with a shared secret (HS256)."""
+
+    def __init__(
+        self,
+        *,
+        secret: str,
+        issuer: str,
+        audience: str,
+        algorithms: list[str],
+        required_scopes: list[str],
+        allowed_emails: list[str],
+    ) -> None:
+        self.secret = secret
+        self.issuer = issuer
+        self.audience = audience
+        self.algorithms = algorithms
+        self.required_scopes = set(required_scopes)
+        self.allowed_emails = set(allowed_emails)
+
+    async def verify_token(self, token: str) -> AccessToken | None:
+        try:
+            claims = cast(
+                dict[str, Any],
+                jwt.decode(
+                    token,
+                    self.secret,
+                    algorithms=self.algorithms,
+                    audience=self.audience,
+                    issuer=self.issuer,
+                    leeway=30,
+                    options={"require": ["exp", "iss"]},
+                ),
+            )
+            scopes = _extract_scopes(claims)
+            if not self.required_scopes.issubset(scopes):
+                LOGGER.warning(
+                    "Rejected OAuth token with insufficient scopes; required=%s supplied=%s",
+                    sorted(self.required_scopes),
+                    scopes,
+                )
+                return None
+
+            if self.allowed_emails:
+                email = str(claims.get("email", "")).strip().lower()
+                if email not in self.allowed_emails:
+                    LOGGER.warning("Rejected OAuth token for disallowed email")
+                    return None
+
+            client_id = (
+                claims.get("azp")
+                or claims.get("client_id")
+                or claims.get("sub")
+                or "unknown-client"
+            )
+            return AccessToken(
+                token=token,
+                client_id=str(client_id),
+                scopes=scopes,
+                expires_at=int(claims["exp"]),
+                resource=self.audience,
+                subject=str(claims["sub"]) if claims.get("sub") else None,
+                claims=claims,
+            )
+        except Exception as exc:
+            LOGGER.warning("Rejected invalid local OAuth token: %s", type(exc).__name__)
+            return None
+
+
 def _configure_google_auth() -> None:
     """Select Cloud Run ADC or retain the upstream credential-file/OAuth logic."""
 
@@ -223,9 +300,9 @@ def _security_meta(auth_enabled: bool, scopes: list[str]) -> dict[str, Any]:
 
 def build_server() -> FastMCP:
     auth_mode = os.getenv("MCP_AUTH_MODE", "oauth").strip().lower()
-    if auth_mode not in {"oauth", "external_jwt", "none"}:
+    if auth_mode not in {"oauth", "external_jwt", "oauth_local", "none"}:
         raise RuntimeError(
-            "MCP_AUTH_MODE must be 'oauth', 'external_jwt', or 'none'"
+            "MCP_AUTH_MODE must be 'oauth', 'external_jwt', 'oauth_local', or 'none'"
         )
     auth_enabled = auth_mode != "none"
 
@@ -267,7 +344,7 @@ def build_server() -> FastMCP:
                 service_documentation_url=documentation_url,
                 required_scopes=required_scopes,
             )
-        else:
+        elif auth_mode == "external_jwt":
             issuer = _required_env("MCP_OAUTH_ISSUER")
             audience = os.getenv("MCP_OAUTH_AUDIENCE", public_url).strip()
             jwks_uri = _required_env("MCP_OAUTH_JWKS_URI")
@@ -281,6 +358,29 @@ def build_server() -> FastMCP:
                 jwks_uri=jwks_uri,
                 algorithms=algorithms,
                 required_scopes=required_scopes,
+            )
+            auth_settings = AuthSettings(
+                issuer_url=issuer,
+                resource_server_url=audience,
+                service_documentation_url=documentation_url,
+                required_scopes=required_scopes,
+            )
+        else:
+            issuer = os.getenv("MCP_OAUTH_ISSUER", os.getenv("OAUTH_ISSUER_URL", public_url)).strip()
+            audience = os.getenv("MCP_OAUTH_AUDIENCE", os.getenv("OAUTH_RESOURCE_URL", public_url)).strip()
+            secret = _required_env_any(["MCP_OAUTH_TOKEN_SECRET", "OAUTH_TOKEN_SECRET"])
+            algorithms = _csv_env("MCP_OAUTH_ALGORITHMS", "HS256")
+            if not algorithms:
+                raise RuntimeError("MCP_OAUTH_ALGORITHMS must not be empty")
+            allowed_emails = [email.strip().lower() for email in _csv_env("OAUTH_ALLOWED_EMAILS")]
+
+            token_verifier = SharedSecretTokenVerifier(
+                secret=secret,
+                issuer=issuer,
+                audience=audience,
+                algorithms=algorithms,
+                required_scopes=required_scopes,
+                allowed_emails=allowed_emails,
             )
             auth_settings = AuthSettings(
                 issuer_url=issuer,

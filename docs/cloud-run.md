@@ -91,6 +91,11 @@ GSC_ALLOWED_PROPERTIES=sc-domain:makeuppalace.com.au
 
 Do not place either OAuth secret in `.env.chatgpt`.
 
+Optional compatibility modes:
+
+- `MCP_AUTH_MODE=external_jwt`: set `MCP_OAUTH_ISSUER`, `MCP_OAUTH_JWKS_URI`, and (optionally) `MCP_OAUTH_AUDIENCE`.
+- `MCP_AUTH_MODE=oauth_local`: set `MCP_OAUTH_TOKEN_SECRET` (or `OAUTH_TOKEN_SECRET`) and optionally `MCP_OAUTH_AUDIENCE`.
+
 For a first deployment, the final Cloud Run hostname is not known until deployment.
 Deploy once with the anticipated service URL, then read the actual URL and update
 `MCP_PUBLIC_BASE_URL` before the final deployment:
