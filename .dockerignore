@@ -14,3 +14,11 @@ __pycache__/
 *.egg-info/
 dist/
 .venv/
+
+# Local environment and private key material
+.env
+.env.*
+!.env.chatgpt.example
+*.pem
+*.key
+*.p12
