@@ -8,6 +8,9 @@ set -euo pipefail
 # Required shell vars before running:
 #   PROJECT_ID, REGION, SERVICE, RUNTIME_SA
 #
+# Optional shell var:
+#   BUILD_SERVICE_ACCOUNT (recommended when Cloud Build default SA is missing)
+#
 # The env file provides MCP/GSC runtime vars (see .env.chatgpt.example).
 
 ENV_FILE="${1:-.env.chatgpt}"
@@ -95,13 +98,21 @@ done
 
 echo "Deploying ${SERVICE} to Cloud Run (${PROJECT_ID}/${REGION})..."
 
-gcloud run deploy "$SERVICE" \
-  --project "$PROJECT_ID" \
-  --region "$REGION" \
-  --source . \
-  --service-account "$RUNTIME_SA" \
-  --allow-unauthenticated \
+deploy_args=(
+  --project "$PROJECT_ID"
+  --region "$REGION"
+  --source .
+  --service-account "$RUNTIME_SA"
+  --allow-unauthenticated
   --set-env-vars "$env_csv"
+)
+
+if [[ -n "${BUILD_SERVICE_ACCOUNT:-}" ]]; then
+  deploy_args+=(--build-service-account "$BUILD_SERVICE_ACCOUNT")
+fi
+
+gcloud run deploy "$SERVICE" \
+  "${deploy_args[@]}"
 
 echo
 echo "Deployment complete. Quick checks:"
