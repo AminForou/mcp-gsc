@@ -1,33 +1,24 @@
 # Cloud Run deployment runbook
 
-This guide deploys the ChatGPT-compatible MCP HTTP server (`mp-gsc-mcp-http`) to
-Cloud Run.
+This runbook deploys the ChatGPT-compatible GSC MCP server with its embedded,
+single-owner OAuth 2.1 authorization server.
 
-## 1) Prerequisites
-
-- `gcloud` CLI installed and authenticated
-- A Google Cloud project with billing enabled
-- APIs enabled:
-  - Cloud Run Admin API
-  - Cloud Build API
-  - Artifact Registry API
-- OAuth provider configured for ChatGPT MCP connector
-- Runtime service account added as a user on every GSC property listed in
-  `GSC_ALLOWED_PROPERTIES`
-
-Enable required services:
+## 1. Enable services
 
 ```bash
 PROJECT_ID="YOUR_PROJECT_ID"
 
 gcloud config set project "$PROJECT_ID"
-gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com
+gcloud services enable \
+  run.googleapis.com \
+  cloudbuild.googleapis.com \
+  artifactregistry.googleapis.com \
+  secretmanager.googleapis.com
 ```
 
-## 2) Create runtime service account
+## 2. Create the runtime service account
 
 ```bash
-PROJECT_ID="YOUR_PROJECT_ID"
 RUNTIME_SA_NAME="mp-gsc-mcp"
 RUNTIME_SA="${RUNTIME_SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
 
@@ -35,29 +26,92 @@ gcloud iam service-accounts create "$RUNTIME_SA_NAME" \
   --display-name="MP GSC MCP Runtime"
 ```
 
-`GSC_GOOGLE_AUTH_MODE=adc` uses this service account at runtime. Search Console
-authorization is granted by adding this email in Search Console users/permissions,
-not by extra Google Cloud IAM roles.
+Add `$RUNTIME_SA` as a Search Console user on each exact property configured in
+`GSC_ALLOWED_PROPERTIES`. No extra Google Cloud role grants Search Console access.
 
-## 3) Create deployment env file
+## 3. Create OAuth secrets
+
+```bash
+SERVICE="mp-gsc-mcp"
+TOKEN_SECRET_NAME="${SERVICE}-oauth-token-secret"
+PASSWORD_SECRET_NAME="${SERVICE}-oauth-admin-password"
+
+openssl rand -base64 48 | \
+  gcloud secrets create "$TOKEN_SECRET_NAME" \
+    --project "$PROJECT_ID" \
+    --replication-policy=automatic \
+    --data-file=-
+
+read -rsp "OAuth authorization password: " OAUTH_PASSWORD
+echo
+printf '%s' "$OAUTH_PASSWORD" | \
+  gcloud secrets create "$PASSWORD_SECRET_NAME" \
+    --project "$PROJECT_ID" \
+    --replication-policy=automatic \
+    --data-file=-
+unset OAUTH_PASSWORD
+```
+
+For existing secrets, add a new version rather than creating them again:
+
+```bash
+openssl rand -base64 48 | \
+  gcloud secrets versions add "$TOKEN_SECRET_NAME" --data-file=-
+```
+
+Grant only the runtime service account access to the two secrets:
+
+```bash
+for SECRET in "$TOKEN_SECRET_NAME" "$PASSWORD_SECRET_NAME"; do
+  gcloud secrets add-iam-policy-binding "$SECRET" \
+    --project "$PROJECT_ID" \
+    --member="serviceAccount:${RUNTIME_SA}" \
+    --role="roles/secretmanager.secretAccessor"
+done
+```
+
+Rotating `OAUTH_TOKEN_SECRET` invalidates all existing OAuth clients and tokens and
+requires reconnecting the ChatGPT connector. Rotating only the password does not
+invalidate existing tokens.
+
+## 4. Configure non-secret environment values
 
 ```bash
 cp .env.chatgpt.example .env.chatgpt
 ```
 
-Edit `.env.chatgpt` and set real values, especially:
+Set at least:
 
-- `MCP_PUBLIC_BASE_URL`
-- `MCP_OAUTH_ISSUER`
-- `MCP_OAUTH_JWKS_URI`
-- `MCP_OAUTH_AUDIENCE`
-- `MCP_REQUIRED_SCOPES`
-- `GSC_ALLOWED_PROPERTIES`
+```text
+MCP_PUBLIC_BASE_URL=https://YOUR_DEPLOYED_HOST
+MCP_REQUIRED_SCOPES=gsc.read
+OAUTH_ALLOWED_EMAILS=YOUR_EMAIL
+GSC_ALLOWED_PROPERTIES=sc-domain:makeuppalace.com.au
+```
 
-## 4) Deploy
+Do not place either OAuth secret in `.env.chatgpt`.
+
+Optional compatibility modes:
+
+- `MCP_AUTH_MODE=external_jwt`: set `MCP_OAUTH_ISSUER`, `MCP_OAUTH_JWKS_URI`, and (optionally) `MCP_OAUTH_AUDIENCE`.
+- `MCP_AUTH_MODE=oauth_local`: set `MCP_OAUTH_TOKEN_SECRET` (or `OAUTH_TOKEN_SECRET`) and optionally `MCP_OAUTH_AUDIENCE`.
+
+For a first deployment, the final Cloud Run hostname is not known until deployment.
+Deploy once with the anticipated service URL, then read the actual URL and update
+`MCP_PUBLIC_BASE_URL` before the final deployment:
 
 ```bash
-PROJECT_ID="YOUR_PROJECT_ID"
+REGION="australia-southeast1"
+SERVICE="mp-gsc-mcp"
+EXPECTED_URL="https://${SERVICE}-PROJECT_HASH.${REGION}.run.app"
+```
+
+A mapped custom domain is preferable because it gives the OAuth issuer and resource a
+stable URL across service recreation.
+
+## 5. Deploy
+
+```bash
 PROJECT_NUMBER="$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')"
 REGION="australia-southeast1"
 SERVICE="mp-gsc-mcp"
@@ -70,38 +124,49 @@ REGION="$REGION" \
 SERVICE="$SERVICE" \
 RUNTIME_SA="$RUNTIME_SA" \
 BUILD_SERVICE_ACCOUNT="$BUILD_SERVICE_ACCOUNT" \
+OAUTH_TOKEN_SECRET_NAME="${SERVICE}-oauth-token-secret" \
+OAUTH_ADMIN_PASSWORD_SECRET_NAME="${SERVICE}-oauth-admin-password" \
+MAX_INSTANCES=1 \
 ./scripts/deploy-cloud-run.sh .env.chatgpt
 ```
 
-The script deploys from source and sets Cloud Run env vars for the MCP OAuth
-resource-server contract.
+The script intentionally enforces one Cloud Run instance because the embedded server
+uses an in-process replay guard for one-time authorization codes and refresh-token
+rotation. Use `MCP_AUTH_MODE=external_jwt` with an established IdP before scaling past
+one instance or supporting multiple users.
 
-If your project shows errors like:
+Cloud Run remains publicly reachable at the network layer through
+`--allow-unauthenticated`. The application-level OAuth middleware protects `/mcp`.
 
-`IAM permission denied for service account PROJECT_NUMBER@cloudbuild.gserviceaccount.com`
-
-it usually means the legacy Cloud Build default service account is deleted or
-unusable. Providing `BUILD_SERVICE_ACCOUNT` bypasses that default.
-
-## 5) Verify
+## 6. Verify discovery and authorization enforcement
 
 ```bash
 PUBLIC_URL="https://YOUR_DEPLOYED_HOST"
 
-curl -fsS "$PUBLIC_URL/health"
+curl -fsS "$PUBLIC_URL/health" | jq .
 curl -fsS "$PUBLIC_URL/.well-known/oauth-protected-resource" | jq .
+curl -fsS "$PUBLIC_URL/.well-known/oauth-authorization-server" | jq .
 curl -i -X POST "$PUBLIC_URL/mcp"
 ```
 
-Expected behavior:
+Expected results:
 
-- `/health` returns JSON with `"status": "ok"`
-- `/.well-known/oauth-protected-resource` returns JSON metadata
-- unauthenticated `/mcp` returns `401` with `WWW-Authenticate`
+- `/health` returns `status=ok` and `auth_mode=oauth`.
+- Protected-resource metadata identifies `$PUBLIC_URL` and the same authorization
+  server.
+- Authorization-server metadata advertises authorization code, refresh token,
+  dynamic client registration, and PKCE `S256`.
+- An unauthenticated MCP request returns `401` with `WWW-Authenticate` referencing
+  protected-resource metadata.
 
-## Notes
+## 7. Link ChatGPT
 
-- Keep `MCP_AUTH_MODE=oauth` in production.
-- Do not deploy `MCP_AUTH_MODE=none` on public Cloud Run endpoints.
-- Cloud Run network access can be `--allow-unauthenticated`; OAuth enforcement is
-  handled by the MCP server itself.
+Add the custom MCP server URL:
+
+```text
+https://YOUR_DEPLOYED_HOST/mcp
+```
+
+ChatGPT discovers the OAuth metadata, dynamically registers its callback, opens the
+server authorization page, exchanges the authorization code with its PKCE verifier,
+and then sends the returned bearer token on MCP requests.

@@ -30,6 +30,12 @@ from mcp.types import ToolAnnotations
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+from embedded_oauth import (
+    EmbeddedOAuthConfig,
+    EmbeddedOAuthTokenVerifier,
+    load_embedded_oauth_config,
+    register_embedded_oauth_routes,
+)
 import gsc_server as upstream
 
 LOGGER = logging.getLogger("mp-gsc-mcp.chatgpt")
@@ -60,6 +66,14 @@ def _required_env(name: str) -> str:
     if not value:
         raise RuntimeError(f"{name} is required")
     return value
+
+
+def _required_env_any(names: list[str]) -> str:
+    for name in names:
+        value = os.getenv(name, "").strip()
+        if value:
+            return value
+    raise RuntimeError(f"One of {', '.join(names)} is required")
 
 
 def _normalise_public_url(value: str) -> str:
@@ -148,6 +162,75 @@ class JwtTokenVerifier:
             return None
 
 
+class SharedSecretTokenVerifier:
+    """Verify JWT access tokens signed with a shared secret (HS256)."""
+
+    def __init__(
+        self,
+        *,
+        secret: str,
+        issuer: str,
+        audience: str,
+        algorithms: list[str],
+        required_scopes: list[str],
+        allowed_emails: list[str],
+    ) -> None:
+        self.secret = secret
+        self.issuer = issuer
+        self.audience = audience
+        self.algorithms = algorithms
+        self.required_scopes = set(required_scopes)
+        self.allowed_emails = set(allowed_emails)
+
+    async def verify_token(self, token: str) -> AccessToken | None:
+        try:
+            claims = cast(
+                dict[str, Any],
+                jwt.decode(
+                    token,
+                    self.secret,
+                    algorithms=self.algorithms,
+                    audience=self.audience,
+                    issuer=self.issuer,
+                    leeway=30,
+                    options={"require": ["exp", "iss"]},
+                ),
+            )
+            scopes = _extract_scopes(claims)
+            if not self.required_scopes.issubset(scopes):
+                LOGGER.warning(
+                    "Rejected OAuth token with insufficient scopes; required=%s supplied=%s",
+                    sorted(self.required_scopes),
+                    scopes,
+                )
+                return None
+
+            if self.allowed_emails:
+                email = str(claims.get("email", "")).strip().lower()
+                if email not in self.allowed_emails:
+                    LOGGER.warning("Rejected OAuth token for disallowed email")
+                    return None
+
+            client_id = (
+                claims.get("azp")
+                or claims.get("client_id")
+                or claims.get("sub")
+                or "unknown-client"
+            )
+            return AccessToken(
+                token=token,
+                client_id=str(client_id),
+                scopes=scopes,
+                expires_at=int(claims["exp"]),
+                resource=self.audience,
+                subject=str(claims["sub"]) if claims.get("sub") else None,
+                claims=claims,
+            )
+        except Exception as exc:
+            LOGGER.warning("Rejected invalid local OAuth token: %s", type(exc).__name__)
+            return None
+
+
 def _configure_google_auth() -> None:
     """Select Cloud Run ADC or retain the upstream credential-file/OAuth logic."""
 
@@ -217,9 +300,11 @@ def _security_meta(auth_enabled: bool, scopes: list[str]) -> dict[str, Any]:
 
 def build_server() -> FastMCP:
     auth_mode = os.getenv("MCP_AUTH_MODE", "oauth").strip().lower()
-    if auth_mode not in {"oauth", "none"}:
-        raise RuntimeError("MCP_AUTH_MODE must be 'oauth' or 'none'")
-    auth_enabled = auth_mode == "oauth"
+    if auth_mode not in {"oauth", "external_jwt", "oauth_local", "none"}:
+        raise RuntimeError(
+            "MCP_AUTH_MODE must be 'oauth', 'external_jwt', 'oauth_local', or 'none'"
+        )
+    auth_enabled = auth_mode != "none"
 
     host = os.getenv("MCP_HOST", "0.0.0.0")
     try:
@@ -236,34 +321,73 @@ def build_server() -> FastMCP:
         raise RuntimeError("MCP_REQUIRED_SCOPES must not be empty in OAuth mode")
 
     auth_settings: AuthSettings | None = None
-    token_verifier: JwtTokenVerifier | None = None
+    token_verifier: Any | None = None
+    embedded_oauth_config: EmbeddedOAuthConfig | None = None
     public_url: str | None = None
 
     if auth_enabled:
         public_url = _normalise_public_url(_required_env("MCP_PUBLIC_BASE_URL"))
-        issuer = _required_env("MCP_OAUTH_ISSUER")
-        audience = os.getenv("MCP_OAUTH_AUDIENCE", public_url).strip()
-        jwks_uri = _required_env("MCP_OAUTH_JWKS_URI")
-        algorithms = _csv_env("MCP_OAUTH_ALGORITHMS", "RS256")
-        if not algorithms:
-            raise RuntimeError("MCP_OAUTH_ALGORITHMS must not be empty")
+        documentation_url = os.getenv(
+            "MCP_SERVICE_DOCUMENTATION_URL",
+            "https://github.com/ZipSites/mp-gsc-mcp/blob/main/docs/chatgpt-plugin.md",
+        )
 
-        token_verifier = JwtTokenVerifier(
-            issuer=issuer,
-            audience=audience,
-            jwks_uri=jwks_uri,
-            algorithms=algorithms,
-            required_scopes=required_scopes,
-        )
-        auth_settings = AuthSettings(
-            issuer_url=issuer,
-            resource_server_url=public_url,
-            service_documentation_url=os.getenv(
-                "MCP_SERVICE_DOCUMENTATION_URL",
-                "https://github.com/ZipSites/mp-gsc-mcp/blob/main/docs/chatgpt-plugin.md",
-            ),
-            required_scopes=required_scopes,
-        )
+        if auth_mode == "oauth":
+            embedded_oauth_config = load_embedded_oauth_config(
+                public_url=public_url,
+                required_scopes=required_scopes,
+            )
+            token_verifier = EmbeddedOAuthTokenVerifier(embedded_oauth_config)
+            auth_settings = AuthSettings(
+                issuer_url=embedded_oauth_config.issuer_url,
+                resource_server_url=embedded_oauth_config.resource_url,
+                service_documentation_url=documentation_url,
+                required_scopes=required_scopes,
+            )
+        elif auth_mode == "external_jwt":
+            issuer = _required_env("MCP_OAUTH_ISSUER")
+            audience = os.getenv("MCP_OAUTH_AUDIENCE", public_url).strip()
+            jwks_uri = _required_env("MCP_OAUTH_JWKS_URI")
+            algorithms = _csv_env("MCP_OAUTH_ALGORITHMS", "RS256")
+            if not algorithms:
+                raise RuntimeError("MCP_OAUTH_ALGORITHMS must not be empty")
+
+            token_verifier = JwtTokenVerifier(
+                issuer=issuer,
+                audience=audience,
+                jwks_uri=jwks_uri,
+                algorithms=algorithms,
+                required_scopes=required_scopes,
+            )
+            auth_settings = AuthSettings(
+                issuer_url=issuer,
+                resource_server_url=audience,
+                service_documentation_url=documentation_url,
+                required_scopes=required_scopes,
+            )
+        else:
+            issuer = os.getenv("MCP_OAUTH_ISSUER", os.getenv("OAUTH_ISSUER_URL", public_url)).strip()
+            audience = os.getenv("MCP_OAUTH_AUDIENCE", os.getenv("OAUTH_RESOURCE_URL", public_url)).strip()
+            secret = _required_env_any(["MCP_OAUTH_TOKEN_SECRET", "OAUTH_TOKEN_SECRET"])
+            algorithms = _csv_env("MCP_OAUTH_ALGORITHMS", "HS256")
+            if not algorithms:
+                raise RuntimeError("MCP_OAUTH_ALGORITHMS must not be empty")
+            allowed_emails = [email.strip().lower() for email in _csv_env("OAUTH_ALLOWED_EMAILS")]
+
+            token_verifier = SharedSecretTokenVerifier(
+                secret=secret,
+                issuer=issuer,
+                audience=audience,
+                algorithms=algorithms,
+                required_scopes=required_scopes,
+                allowed_emails=allowed_emails,
+            )
+            auth_settings = AuthSettings(
+                issuer_url=issuer,
+                resource_server_url=audience,
+                service_documentation_url=documentation_url,
+                required_scopes=required_scopes,
+            )
 
     allowed = _allowed_properties(auth_enabled)
     _configure_google_auth()
@@ -318,6 +442,9 @@ def build_server() -> FastMCP:
             allowed_origins=allowed_origins,
         ),
     )
+
+    if embedded_oauth_config is not None:
+        register_embedded_oauth_routes(server, embedded_oauth_config)
 
     meta = _security_meta(auth_enabled, required_scopes)
 
@@ -410,6 +537,7 @@ def build_server() -> FastMCP:
                 "status": "ok",
                 "service": "mp-gsc-mcp",
                 "transport": "streamable-http",
+                "auth_mode": auth_mode,
             }
         )
 
@@ -432,6 +560,11 @@ def build_server() -> FastMCP:
                 "health_endpoint": "/health",
                 "oauth_protected_resource": (
                     "/.well-known/oauth-protected-resource" if auth_enabled else None
+                ),
+                "oauth_authorization_server": (
+                    "/.well-known/oauth-authorization-server"
+                    if auth_mode == "oauth"
+                    else None
                 ),
             }
         )
