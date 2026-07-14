@@ -7,7 +7,7 @@ RUN uv sync --no-cache --no-install-project
 
 # The legacy stdio/SSE server remains available as gsc_server.py. Cloud Run uses
 # the dedicated ChatGPT-compatible Streamable HTTP entrypoint.
-COPY gsc_server.py chatgpt_server.py embedded_oauth.py ./
+COPY gsc_server.py chatgpt_server.py embedded_oauth.py gsc_seo_tools.py ./
 
 ENV PORT=8080 \
     MCP_AUTH_MODE=oauth \
