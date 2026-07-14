@@ -37,6 +37,7 @@ from embedded_oauth import (
     register_embedded_oauth_routes,
 )
 import gsc_server as upstream
+import gsc_seo_tools as seo_tools
 
 LOGGER = logging.getLogger("mp-gsc-mcp.chatgpt")
 
@@ -479,6 +480,17 @@ def build_server() -> FastMCP:
                 "get_sitemaps",
                 "list_sitemaps_enhanced",
                 "get_sitemap_details",
+                "get_query_page_performance",
+                "compare_query_page_periods",
+                "find_query_cannibalisation",
+                "inspect_url_index_status",
+                "batch_inspect_urls",
+                "list_sitemaps",
+                "get_sitemap_status",
+                "compare_sitemap_to_gsc_pages",
+                "find_indexed_url_variants",
+                "find_google_canonical_conflicts",
+                "get_search_appearance_performance",
             ],
         }
 
@@ -517,6 +529,29 @@ def build_server() -> FastMCP:
         ("get_sitemaps", "List sitemaps", upstream.get_sitemaps),
         ("list_sitemaps_enhanced", "List detailed sitemaps", upstream.list_sitemaps_enhanced),
         ("get_sitemap_details", "Get sitemap details", upstream.get_sitemap_details),
+        ("get_query_page_performance", "Get query-page performance", seo_tools.get_query_page_performance),
+        ("compare_query_page_periods", "Compare query-page periods", seo_tools.compare_query_page_periods),
+        ("find_query_cannibalisation", "Find query cannibalisation", seo_tools.find_query_cannibalisation),
+        ("inspect_url_index_status", "Inspect URL index status", seo_tools.inspect_url_index_status),
+        ("batch_inspect_urls", "Inspect URL batch", seo_tools.batch_inspect_urls),
+        ("list_sitemaps", "List sitemap status", seo_tools.list_sitemaps),
+        ("get_sitemap_status", "Get sitemap status", seo_tools.get_sitemap_status),
+        (
+            "compare_sitemap_to_gsc_pages",
+            "Compare sitemap to GSC-observed pages",
+            seo_tools.compare_sitemap_to_gsc_pages,
+        ),
+        ("find_indexed_url_variants", "Find indexed URL variants", seo_tools.find_indexed_url_variants),
+        (
+            "find_google_canonical_conflicts",
+            "Find Google canonical conflicts",
+            seo_tools.find_google_canonical_conflicts,
+        ),
+        (
+            "get_search_appearance_performance",
+            "Get search appearance performance",
+            seo_tools.get_search_appearance_performance,
+        ),
     ]
 
     for name, title, fn in read_tools:

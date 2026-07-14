@@ -52,10 +52,11 @@ class ServerBuildTests(unittest.TestCase):
             server = build_server()
 
         tools = {tool.name: tool for tool in server._tool_manager.list_tools()}
-        self.assertEqual(len(tools), 14)
+        self.assertEqual(len(tools), 25)
         self.assertNotIn("add_site", tools)
         self.assertNotIn("delete_site", tools)
         self.assertNotIn("submit_sitemap", tools)
+        self.assertIn("get_query_page_performance", tools)
 
         analytics = tools["get_search_analytics"]
         self.assertTrue(analytics.annotations.readOnlyHint)
