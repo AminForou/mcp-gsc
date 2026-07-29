@@ -1,9 +1,15 @@
 from typing import Any, Dict, List, Optional
+import base64
+import hashlib
 import logging
 import os
 import json
-import sys
+import secrets
 import shutil
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import datetime, timedelta
 
 # Fail loudly on unsupported Python. The mcp/FastMCP dependency requires 3.11+.
@@ -87,6 +93,21 @@ if os.path.exists(_OLD_TOKEN) and not os.path.exists(TOKEN_FILE):
 # Environment variable to skip OAuth authentication
 SKIP_OAUTH = os.environ.get("GSC_SKIP_OAUTH", "").lower() in ("true", "1", "yes")
 
+# OAuth mode: "local" (default) opens a browser on this machine; "headless" uses
+# interactive tool calls (start_oauth / complete_oauth) so the user can visit the
+# auth URL from any browser and paste back the authorization code.
+OAUTH_MODE = os.environ.get("GSC_OAUTH_MODE", "local").lower().strip() or "local"
+if OAUTH_MODE not in ("local", "headless"):
+    raise ValueError(
+        f"Invalid GSC_OAUTH_MODE value '{OAUTH_MODE}'. "
+        "Accepted values are 'local' (default, opens browser) or 'headless' (interactive tool calls)."
+    )
+
+# In-memory state for the headless OAuth flow.  Set by start_oauth, consumed by
+# complete_oauth.  In a long-running MCP server this is fine — only one auth flow
+# can be in progress at a time, and the state is lost on restart (intentional).
+_pending_oauth: Optional[dict] = None
+
 # Safety flag for destructive operations (add_site, delete_site, delete_sitemap).
 # Default is false — set GSC_ALLOW_DESTRUCTIVE=true to enable these tools.
 ALLOW_DESTRUCTIVE = os.environ.get("GSC_ALLOW_DESTRUCTIVE", "false").lower() in ("true", "1", "yes")
@@ -133,8 +154,8 @@ def get_gsc_service():
             f"client_secrets.json file."
         )
 
-    # Try OAuth authentication first if not skipped
-    if not SKIP_OAUTH:
+    # Try OAuth authentication first if not skipped (headless mode always uses OAuth)
+    if not SKIP_OAUTH or OAUTH_MODE == "headless":
         try:
             return get_gsc_service_oauth()
         except Exception as e:
@@ -212,7 +233,14 @@ def get_gsc_service_oauth():
                     f"or set the GSC_OAUTH_CLIENT_SECRETS_FILE environment variable."
                 )
 
-            # Start OAuth flow — opens a browser window on macOS even from MCP subprocess.
+            if OAUTH_MODE == "headless":
+                raise RuntimeError(
+                    "No valid OAuth token found and GSC_OAUTH_MODE=headless — "
+                    "cannot open a browser automatically. Call the 'start_oauth' tool "
+                    "to get an authorization URL, then call 'complete_oauth' with "
+                    "the authorization code."
+                )
+
             flow = InstalledAppFlow.from_client_secrets_file(OAUTH_CLIENT_SECRETS_FILE, SCOPES)
             creds = flow.run_local_server(port=0)
             
@@ -222,6 +250,178 @@ def get_gsc_service_oauth():
     
     # Build and return the service
     return build("searchconsole", "v1", credentials=creds, cache_discovery=False)
+
+
+def _generate_pkce_verifier() -> str:
+    """Generate a PKCE code verifier (43-128 chars, unreserved ASCII)."""
+    return secrets.token_urlsafe(32)
+
+
+def _generate_pkce_challenge(verifier: str) -> str:
+    """Generate a PKCE code challenge (S256 method) from a code verifier."""
+    digest = hashlib.sha256(verifier.encode("ascii")).digest()
+    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+
+
+def _get_client_config() -> dict:
+    """Extract client_id, client_secret, and redirect_uri from the OAuth client secrets file.
+
+    Google's client_secrets.json has the structure:
+      {"installed": {"client_id": ..., "client_secret": ..., "redirect_uris": [...]}}
+    For headless mode, we use the OOB redirect so the user can copy the
+    authorization code from the browser instead of requiring a localhost listener.
+    """
+    with open(OAUTH_CLIENT_SECRETS_FILE, "r") as f:
+        client_config = json.load(f)
+    installed = client_config.get("installed", client_config.get("web", {}))
+    client_id = installed["client_id"]
+    client_secret = installed.get("client_secret", "")
+    redirect_uris = installed.get("redirect_uris", [])
+    redirect_uri = redirect_uris[0] if redirect_uris else "urn:ietf:wg:oauth:2.0:oob"
+    return {
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "redirect_uri": redirect_uri,
+    }
+
+
+GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+
+
+@mcp.tool()
+async def start_oauth() -> str:
+    """
+    Start an interactive OAuth flow for headless environments (GSC_OAUTH_MODE=headless).
+    Returns an auth_url that you MUST present to the user so they can open it in their
+    own browser. After they authorize, Google displays a code on the page — ask them
+    to paste it back, then call complete_oauth with that code.
+    Only available when GSC_OAUTH_MODE=headless.
+    """
+    global _pending_oauth
+
+    if OAUTH_MODE != "headless":
+        return (
+            "Error: start_oauth is only available when GSC_OAUTH_MODE=headless. "
+            "Set that environment variable and restart the MCP server to use the "
+            "headless OAuth flow."
+        )
+
+    if not os.path.exists(OAUTH_CLIENT_SECRETS_FILE):
+        return (
+            "Error: OAuth client secrets file not found. "
+            "Set GSC_OAUTH_CLIENT_SECRETS_FILE to the path of your client_secrets.json."
+        )
+
+    client_cfg = _get_client_config()
+    # Force OOB redirect in headless mode — localhost isn't reachable
+    redirect_uri = "urn:ietf:wg:oauth:2.0:oob"
+    code_verifier = _generate_pkce_verifier()
+    code_challenge = _generate_pkce_challenge(code_verifier)
+
+    auth_url = (
+        f"{GOOGLE_AUTH_URL}?"
+        f"client_id={client_cfg['client_id']}&"
+        f"redirect_uri={redirect_uri}&"
+        f"response_type=code&"
+        f"scope={'%20'.join(SCOPES)}&"
+        f"code_challenge={code_challenge}&"
+        f"code_challenge_method=S256&"
+        f"access_type=offline&"
+        f"prompt=consent"
+    )
+
+    _pending_oauth = {
+        "client_id": client_cfg["client_id"],
+        "client_secret": client_cfg["client_secret"],
+        "redirect_uri": redirect_uri,
+        "code_verifier": code_verifier,
+    }
+
+    return json.dumps({
+        "status": "pending",
+        "auth_url": auth_url,
+        "instructions": (
+            "You MUST show the auth_url to the user and ask them to open it in their browser. "
+            "After they sign in and authorize, Google will display an authorization code on the page. "
+            "Ask the user to paste that code, then call complete_oauth with it. "
+            "Do NOT attempt to open the URL yourself — the user must do this in their own browser."
+        ),
+    })
+
+
+@mcp.tool()
+async def complete_oauth(authorization_code: str) -> str:
+    """
+    Complete the headless OAuth flow by exchanging an authorization code for tokens.
+    You must call start_oauth first, then get the authorization code from the user
+    (they open the URL in their browser and paste back the code Google shows).
+    Only available when GSC_OAUTH_MODE=headless.
+
+    Args:
+        authorization_code: The authorization code the user copied from Google's consent page.
+    """
+    global _pending_oauth
+
+    if OAUTH_MODE != "headless":
+        return (
+            "Error: complete_oauth is only available when GSC_OAUTH_MODE=headless."
+        )
+
+    if not _pending_oauth:
+        return (
+            "Error: No pending OAuth flow. Call start_oauth first to get an authorization URL."
+        )
+
+    try:
+        client_id = _pending_oauth["client_id"]
+        client_secret = _pending_oauth["client_secret"]
+        redirect_uri = _pending_oauth["redirect_uri"]
+        code_verifier = _pending_oauth["code_verifier"]
+
+        token_data = urllib.parse.urlencode({
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "code": authorization_code,
+            "code_verifier": code_verifier,
+            "redirect_uri": redirect_uri,
+            "grant_type": "authorization_code",
+        }).encode("utf-8")
+
+        req = urllib.request.Request(GOOGLE_TOKEN_URL, data=token_data, method="POST")
+        req.add_header("Content-Type", "application/x-www-form-urlencoded")
+
+        with urllib.request.urlopen(req) as resp:
+            token_response = json.loads(resp.read().decode("utf-8"))
+
+        expires_in = token_response.get("expires_in", 3600)
+        expiry = datetime.utcnow() + timedelta(seconds=expires_in)
+
+        creds = Credentials(
+            token=token_response["access_token"],
+            refresh_token=token_response.get("refresh_token"),
+            token_uri=GOOGLE_TOKEN_URL,
+            client_id=client_id,
+            client_secret=client_secret,
+            scopes=SCOPES,
+            expiry=expiry,
+        )
+
+        with open(TOKEN_FILE, "w") as f:
+            f.write(creds.to_json())
+
+        _pending_oauth = None
+
+        return json.dumps({
+            "status": "success",
+            "message": "Successfully authenticated. You can now use all GSC tools.",
+        })
+
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode("utf-8", errors="replace")
+        return f"Error exchanging authorization code: HTTP {e.code} — {error_body}"
+    except Exception as e:
+        return f"Error completing OAuth: {str(e)}"
 
 
 def _site_not_found_error(site_url: str) -> str:
@@ -261,7 +461,21 @@ async def get_capabilities() -> str:
         get_gsc_service()
         auth_status = "✅ Authenticated — ready to use all tools."
     except Exception as e:
-        auth_status = f"❌ Not authenticated — call the 'reauthenticate' tool first to open a browser login window.\nDetails: {e}"
+        if OAUTH_MODE == "headless":
+            auth_status = f"❌ Not authenticated — call 'start_oauth' to begin the headless login flow.\nDetails: {e}"
+        else:
+            auth_status = f"❌ Not authenticated — call the 'reauthenticate' tool first to open a browser login window.\nDetails: {e}"
+
+    if OAUTH_MODE == "headless":
+        auth_section = """Authentication (headless mode — GSC_OAUTH_MODE=headless):
+  - start_oauth: Get an authorization URL to visit in any browser
+  - complete_oauth: Exchange the authorization code for access (call after start_oauth)
+  - reauthenticate: Delete token and restart the headless auth flow"""
+        getting_started_step1 = "1. If not authenticated, call 'start_oauth' to get an auth URL, visit it, then call 'complete_oauth' with the code."
+    else:
+        auth_section = """Authentication:
+  - reauthenticate: Open browser OAuth login window. Call this if you see auth errors."""
+        getting_started_step1 = "1. If not authenticated, call the 'reauthenticate' tool to complete OAuth login."
 
     return f"""Google Search Console MCP Server
 
@@ -269,14 +483,13 @@ AUTH STATUS:
 {auth_status}
 
 GETTING STARTED:
-1. If not authenticated, call the 'reauthenticate' tool to complete OAuth login.
+{getting_started_step1}
 2. Call 'list_properties' to see all your GSC sites and get the exact site_url for other tools.
 3. Use any tool below with the site_url from step 2.
 
 AVAILABLE TOOLS:
 
-Authentication:
-  - reauthenticate: Open browser OAuth login window. Call this if you see auth errors.
+{auth_section}
 
 Properties:
   - list_properties: List all GSC sites/properties you have access to (start here)
@@ -1631,18 +1844,18 @@ Amin combines technical SEO knowledge with programming skills to create innovati
 async def reauthenticate() -> str:
     """
     Perform a logout and new login sequence.
-    Deletes the current OAuth token file and triggers the browser authentication flow.
-    Useful when you need to switch to a different Google account.
+    Deletes the current OAuth token file and triggers a new authentication flow.
+    In local mode (default) opens a browser window; in headless mode starts the
+    start_oauth / complete_oauth interactive flow. Useful when you need to switch
+    to a different Google account.
     """
     try:
-        # Delete existing token to force re-authentication
         if os.path.exists(TOKEN_FILE):
             os.remove(TOKEN_FILE)
             token_deleted = True
         else:
             token_deleted = False
 
-        # Check if OAuth client secrets file exists
         if not os.path.exists(OAUTH_CLIENT_SECRETS_FILE):
             return (
                 "Error: OAuth client secrets file not found. "
@@ -1651,13 +1864,16 @@ async def reauthenticate() -> str:
                 "GSC_OAUTH_CLIENT_SECRETS_FILE environment variable."
             )
 
-        # Trigger new OAuth flow — opens a browser window on the local machine.
-        # run_local_server() works on macOS even from an MCP subprocess because
-        # macOS can open browsers via webbrowser.open() regardless of TTY state.
+        if OAUTH_MODE == "headless":
+            result = await start_oauth()
+            prefix = "Previous session deleted. " if token_deleted else ""
+            data = json.loads(result)
+            data["message"] = prefix + "Call complete_oauth after authorizing."
+            return json.dumps(data)
+
         flow = InstalledAppFlow.from_client_secrets_file(OAUTH_CLIENT_SECRETS_FILE, SCOPES)
         creds = flow.run_local_server(port=0)
 
-        # Save the new credentials for future use
         with open(TOKEN_FILE, "w") as token:
             token.write(creds.to_json())
 
