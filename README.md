@@ -9,6 +9,9 @@ A Model Context Protocol (MCP) server that connects [Google Search Console](http
 
 ## What's New
 
+### [0.3.3] — July 2026
+- **Fixed fresh installs broken by `mcp` 2.0** — pinned `mcp[cli]<2.0.0`. The `mcp` SDK 2.0.0 (released 2026-07-28) removed the `mcp.server.fastmcp` module, so every fresh `uvx mcp-search-console` install crashed on startup with `ModuleNotFoundError: No module named 'mcp.server.fastmcp'`. New installs now resolve a working 1.x SDK again — no `--with "mcp<2"` workaround needed.
+
 ### [0.3.2] — April 2026
 - **OAuth browser flow fixed for uvx** — removed the `isatty` block that prevented the browser login window from opening when running as an MCP subprocess on macOS. OAuth now works out of the box with `uvx`, no manual terminal run needed.
 - **`get_capabilities` tool added** — call this to get a full list of available tools and current auth status in one shot. Useful when your AI assistant isn't sure what tools are available.
@@ -464,6 +467,9 @@ MIT License. See the [LICENSE](LICENSE) file for details.
 ---
 
 ## Changelog
+
+### [0.3.3] — July 2026
+- Pinned `mcp[cli]>=1.3.0,<2.0.0`. The `mcp` SDK 2.0.0 removed `mcp.server.fastmcp`, breaking all fresh `uvx` installs with `ModuleNotFoundError`. Capping below 2.0 restores working installs. (Fixes #41)
 
 ### [0.3.2] — April 2026
 - **OAuth browser flow fixed for uvx** — removed `isatty` block that prevented the OAuth browser window from opening when running as an MCP subprocess on macOS. OAuth + `uvx` now works out of the box.
