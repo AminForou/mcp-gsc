@@ -1,28 +1,37 @@
 ---
 name: cannibalization-check
-description: Detect keyword cannibalization — queries where multiple pages compete
-  for the same rankings. Use when asked about competing pages, keyword overlap, or cannibalization.
+description: Detect possible keyword cannibalization — queries where multiple pages
+  compete for the same rankings. Use when asked about competing pages, keyword overlap,
+  or cannibalization. Results are a signal, not proof.
 ---
 
-# Keyword Cannibalization Check
+# Keyword Cannibalization Check (possible)
 
-Identify queries where multiple pages on the same site are competing for rankings.
+Identify queries where multiple pages on the same site may be competing.
+Multiple URLs for one query is a **signal**, not proof of cannibalization
+(see spec section 19).
 
 ## Steps
 
-1. Call `list_properties` to confirm the exact `site_url`.
-2. Call `get_advanced_search_analytics` with `dimensions=query,page`, `sort_by=impressions`, `row_limit=1000` to get all query+page combinations.
-3. Group rows by `query`. Queries with **two or more distinct pages** in the top results are cannibalization candidates.
-4. For each cannibalizing query, collect: both page URLs, their individual clicks, impressions, CTR, and position.
-5. Sort candidates by total impressions (most valuable cannibalization conflicts first).
-6. Limit the output to the top 20 most severe cases.
+1. Call `gsc_list_properties` to confirm the exact `site_url`.
+2. Call `gsc_find_cannibalization` with the property and a 28-day window. The
+   tool fetches query+page rows, groups by query, and surfaces queries with
+   >= 2 pages and `min_query_impressions` (default 100).
+3. The tool already computes per-page impression/click share and a severity
+   label. Review the `pages` array and `signals` for each candidate.
+4. Prioritize candidates where impression share is split roughly evenly; a
+   single page holding > 90% of impressions is flagged low or dropped.
+5. Limit the output to the most valuable cases.
 
 ## Output format
 
-For each cannibalization case:
+For each candidate:
 - **Query**: the competing keyword
-- **Pages**: list each URL with its metrics
-- **Severity**: High / Medium / Low based on impressions at stake
-- **Recommendation**: which page to consolidate to (pick the one with better position or CTR), and whether to use a canonical, redirect, or content merge
+- **Pages**: each URL with its impressions, share, and position
+- **Severity**: High / Medium / Low (from the tool)
+- **Signals**: e.g. `traffic_split`, `close_positions`
+- **Recommendation**: investigate before acting — consider canonical, redirect,
+  or content merge. Do NOT guarantee ranking improvements.
 
-Present as a markdown table followed by a prioritized action list.
+Present as a markdown table followed by a prioritized, evidence-backed action
+list. Always note that cannibalization is a hypothesis requiring content review.

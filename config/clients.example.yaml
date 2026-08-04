@@ -1,0 +1,35 @@
+# Example client registry (spec section 6).
+#
+# Copy to clients.yaml and point GSC_CLIENTS_CONFIG to its absolute path.
+# The registry is OPTIONAL: if unset, all Google-returned properties are
+# allowed and client_id/client_name are surfaced as null in tool output.
+#
+# Rules enforced at startup:
+# - Each property (site_url) must belong to exactly ONE client.
+# - A property registered to multiple clients causes a startup failure.
+# - This file MUST NOT contain credentials.
+
+clients:
+  - id: client_acme
+    name: ACME Store
+    active: true
+    properties:
+      - site_url: sc-domain:example.com
+        label: Main domain
+      - site_url: https://shop.example.com/
+        label: Shop prefix
+    defaults:
+      country: null
+      search_type: web
+      brand_terms:
+        - acme
+        - acme store
+
+  - id: client_globex
+    name: Globex Corp
+    active: true
+    properties:
+      - site_url: sc-domain:globex.example
+        label: Globex domain
+    defaults:
+      search_type: web

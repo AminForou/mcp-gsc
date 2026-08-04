@@ -13,13 +13,19 @@ venv/
 ENV/
 env/
 
-# Environment and credentials
+# Environment and credentials — NEVER commit these.
 .env
 *.env
-service_account_credentials.json
+service_account*.json
 credentials.json
 token.json
 client_secret*.json
+client_secrets*.json
+*.key
+*.pem
+
+# Client registry (may contain real property lists; keep a .example only)
+config/clients.yaml
 
 # Editor-specific files
 .vscode/
@@ -43,6 +49,8 @@ htmlcov/
 nosetests.xml
 coverage.xml
 *.cover
+.mypy_cache/
+.ruff_cache/
 
 # Documentation
 docs/_build/
@@ -55,3 +63,4 @@ site/
 FORK_ANALYSIS.md
 MCP_LEARNINGS.md
 fork-review.html
+gsc-mcp-fork-spec-fa.md

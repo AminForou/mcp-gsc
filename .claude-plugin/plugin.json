@@ -1,15 +1,15 @@
 {
-  "name": "mcp-search-console",
-  "displayName": "Search Console MCP",
-  "version": "0.3.0",
-  "description": "Connect Google Search Console to Claude Code. Query SEO data, inspect URLs, audit indexing, and identify content opportunities through natural language.",
+  "name": "gsc-seo-analyst-mcp",
+  "displayName": "GSC SEO Analyst MCP",
+  "version": "1.0.0",
+  "description": "Secure, read-only, multi-client Google Search Console MCP server for SEO analytics. Connect GSC to Claude Code to query performance, inspect URLs, find content decay and cannibalization, and surface SEO opportunities.",
   "author": {
     "name": "Amin Foroutan"
   },
   "license": "MIT",
   "homepage": "https://advancedgsc.com",
   "repository": "https://github.com/AminForou/mcp-gsc",
-  "keywords": ["seo", "google-search-console", "analytics", "mcp", "gsc"],
+  "keywords": ["seo", "google-search-console", "analytics", "mcp", "gsc", "read-only", "security"],
   "logo": "./assets/logo.png",
   "skills": "./skills/",
   "mcpServers": "./.mcp.json"

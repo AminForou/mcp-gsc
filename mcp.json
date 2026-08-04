@@ -1,12 +1,13 @@
 {
   "mcpServers": {
-    "mcp-search-console": {
+    "gsc-seo-analyst-mcp": {
       "command": "uvx",
-      "args": ["mcp-search-console"],
+      "args": ["gsc-seo-analyst-mcp"],
       "env": {
-        "GSC_CREDENTIALS_PATH": "",
+        "GSC_AUTH_MODE": "oauth",
         "GSC_OAUTH_CLIENT_SECRETS_FILE": "",
-        "GSC_DATA_STATE": "all"
+        "GSC_CREDENTIALS_PATH": "",
+        "GSC_DEFAULT_DATA_STATE": "final"
       }
     }
   }

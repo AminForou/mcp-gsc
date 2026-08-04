@@ -1,20 +1,21 @@
 [project]
-name = "mcp-search-console"
-version = "0.3.3"
-description = "Google Search Console integration for Model Context Protocol (MCP)"
+name = "gsc-seo-analyst-mcp"
+version = "1.0.0"
+description = "Secure, read-only, multi-client Google Search Console MCP server for SEO analytics"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.13"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [
     {name = "Amin Foroutan", email = "aio@aminforoutan.com"}
 ]
-keywords = ["mcp", "google search console", "seo", "claude", "search analytics"]
+keywords = ["mcp", "google search console", "seo", "claude", "search analytics", "readonly", "security"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
     "Topic :: Internet :: WWW/HTTP :: Indexing/Search",
     "Topic :: Software Development :: Libraries :: Python Modules"
 ]
@@ -22,8 +23,23 @@ dependencies = [
     "google-api-python-client>=2.163.0",
     "google-auth-httplib2>=0.2.0",
     "google-auth-oauthlib>=1.2.1",
-    "mcp[cli]>=1.3.0,<2.0.0",
+    "httplib2>=0.32.0",
+    "pyasn1>=0.6.4",
+    "mcp[cli]>=1.28.1,<2.0.0",
     "platformdirs>=4.0.0",
+    "pydantic>=2.10.0",
+    "pyyaml>=6.0",
+    "tzdata>=2024.1; sys_platform == 'win32'",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.6",
+    "mypy>=1.10",
+    "pip-audit>=2.7",
 ]
 
 [project.urls]
@@ -31,12 +47,43 @@ dependencies = [
 "Bug Tracker" = "https://github.com/AminForou/mcp-gsc/issues"
 
 [project.scripts]
-mcp-gsc = "gsc_server:main"
-mcp-search-console = "gsc_server:main"
+gsc-mcp = "gsc_mcp.cli:main"
+gsc-seo-analyst-mcp = "gsc_mcp.cli:main"
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-py-modules = ["gsc_server"]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-ra"
+
+[tool.coverage.run]
+source = ["src/gsc_mcp"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 85
+show_missing = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.11"
+packages = ["src/gsc_mcp"]
+strict_optional = true
+warn_unused_ignores = true
+ignore_missing_imports = true
