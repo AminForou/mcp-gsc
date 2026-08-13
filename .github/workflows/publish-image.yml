@@ -36,6 +36,11 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/klartika/gsc-mcp-server
+          # No `latest`. The deployment repo's convention is that a stack pins
+          # a real version or a digest and never a moving tag, so publishing
+          # `latest` here only creates something for someone to pin by mistake.
+          flavor: |
+            latest=false
           tags: |
             type=ref,event=tag
             type=sha,prefix=sha-
