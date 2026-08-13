@@ -111,8 +111,11 @@ Two things that break the handshake if missed:
   leftmost value is client-supplied. A second proxy in front means skipping that
   many entries.
 
-If the zone is on Cloudflare, keep this record **DNS-only (grey cloud)** —
-Cloudflare's proxy buffers SSE and imposes request timeouts.
+A Cloudflare-proxied record (orange cloud) works — this is deployed that way.
+If streaming ever misbehaves, look at Cloudflare's proxy-level request timeout
+on non-Enterprise plans, which applies to connections that go idle; MCP's SSE
+traffic normally keeps that from triggering. DNS-only is the fallback, not the
+starting point.
 
 ---
 
