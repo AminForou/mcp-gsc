@@ -1,0 +1,33 @@
+# syntax=docker/dockerfile:1
+# Image for the remote OAuth HTTP transport (gsc_remote), not upstream's stdio
+# server — that one is built from the unmodified `Dockerfile`.
+
+FROM python:3.13-slim AS base
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PORT=8080
+
+WORKDIR /app
+
+# Only the package and its dependencies. Tests are deliberately not copied.
+COPY pyproject.toml README.md gsc_server.py ./
+COPY gsc_remote ./gsc_remote
+
+RUN pip install .
+
+# Run as a non-root user. Pre-create the token-DB directory owned by that user:
+# a freshly created Docker named volume inherits this ownership, so the non-root
+# process can write the SQLite DB (TOKEN_DB_PATH defaults to /data/tokens.db).
+RUN useradd --create-home --uid 10001 appuser \
+    && mkdir -p /data \
+    && chown appuser:appuser /data
+
+USER appuser
+
+VOLUME ["/data"]
+EXPOSE 8080
+
+CMD ["gsc-mcp-http"]
