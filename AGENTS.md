@@ -26,12 +26,24 @@ its tools are unchanged.
    monkeypatches, not source edits. Periodically:
    `git fetch upstream && git rebase upstream/main`.
 
-   Two documented exceptions, both in `README.md`, both cheap to re-apply:
-   the orientation banner at the top (upstream's README describes the local
-   stdio server, which would otherwise be the only thing a reader sees), and
-   the removal of upstream's advertisements for a competing hosted GSC MCP
-   service. Nothing else in an upstream file changes. On a rebase, keep the
-   banner, drop re-introduced ads, take upstream's changes in between.
+   Documented exceptions, all cheap to re-apply, all for the same reason —
+   upstream ships artefacts describing a **local** server this fork does not
+   deploy:
+
+   - `README.md`: the orientation banner at the top, and the removal of
+     upstream's advertisements for a competing hosted GSC MCP service.
+   - **Deleted:** `.claude-plugin/`, `.cursor-plugin/`, `.mcp.json`,
+     `mcp.json`. They configure `uvx mcp-search-console` — the local stdio
+     server authenticated by credential files — so installing the plugin would
+     stand up a second GSC server with different auth beside the remote
+     connector this fork exists to provide. They also carry upstream's author
+     and a `homepage` pointing at the same hosted service. Without a
+     `marketplace.json` they were never installable as a plugin anyway.
+   - `skills/indexing-audit/SKILL.md`: a one-word bug fix, also sent upstream.
+
+   Nothing else in an upstream file changes. On a rebase: keep the banner,
+   re-delete the manifests, drop re-introduced ads, take upstream's changes in
+   between. `skills/` is otherwise upstream's and stays that way.
 3. **Never commit to `main`.** Always work on a branch, open a PR, merge the PR
    — even for docs.
 4. **TDD.** Write a failing test first, then the implementation. Keep the suite
