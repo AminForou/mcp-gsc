@@ -39,6 +39,11 @@ its tools are unchanged.
      connector this fork exists to provide. They also carry upstream's author
      and a `homepage` pointing at the same hosted service. Without a
      `marketplace.json` they were never installable as a plugin anyway.
+   - `CLAUDE.md`: a fork banner pointing here, plus corrections to the three
+     sections that actively misdirect — it told assistants to add tools to
+     `gsc_server.py` (rule 2), gave a test command that skips
+     `tests/remote/`, and documented only upstream's image. The rest is
+     upstream's and still describes the local server accurately.
    - `skills/indexing-audit/SKILL.md`: a one-word bug fix, also sent upstream.
 
    Nothing else in an upstream file changes. On a rebase: keep the banner,
