@@ -2,8 +2,23 @@
 
 A Model Context Protocol (MCP) server that connects [Google Search Console](https://search.google.com/search-console/about) (GSC) to AI assistants, allowing you to analyze your SEO data through natural language conversations. Works with **Claude Desktop**, **Cursor**, **Codex CLI**, **Gemini CLI**, **Antigravity**, and any other MCP-compatible client.
 
-> **Skip setup, get more.** A more advanced hosted version — one-click sign-in, added GA4 tools. Works with Claude Desktop, Claude Code, Claude.ai, Codex, Cursor, and any MCP client. Only **100 seats**.
-> → [**Advanced GSC MCP (hosted)**](https://www.advancedgsc.com/mcp?utm_source=github&utm_medium=readme&utm_campaign=mcp-gsc&utm_content=hero-callout)
+> ### This is Klartika's fork — a **remote** server
+>
+> Upstream [`AminForou/mcp-gsc`](https://github.com/AminForou/mcp-gsc) is a
+> **local (stdio)** server that reads credential files from your machine. This
+> fork adds a **remote, OAuth 2.1-protected HTTP transport**: it runs as a
+> container, each user signs in with their own Google account, and it exposes a
+> **read-only** subset of the tools (`webmasters.readonly`, no write
+> operations).
+>
+> - **Deploying or operating it?** → [`DEPLOY.md`](DEPLOY.md) and [`docs/OPERATIONS.md`](docs/OPERATIONS.md)
+> - **Changing the code?** → [`AGENTS.md`](AGENTS.md) — read it first, it has rules that keep this fork rebaseable
+> - **Why it is built this way?** → [`docs/superpowers/specs/`](docs/superpowers/specs/)
+>
+> Everything below this banner is upstream's documentation for the **local**
+> server. It is accurate for that use, and unmodified so this fork stays easy to
+> rebase — but `uvx`, `client_secrets.json` and the write tools it describes do
+> not apply to the remote deployment.
 
 ---
 
@@ -65,14 +80,6 @@ A Model Context Protocol (MCP) server that connects [Google Search Console](http
 | `reauthenticate` | Re-run the OAuth browser login (switch accounts) | Nothing |
 
 *Ask your AI assistant to "call get_capabilities" for the full list of all 20 tools.*
-
----
-
-<div align="center">
-  <a href="https://www.advancedgsc.com/mcp?utm_source=github&utm_medium=readme&utm_campaign=mcp-gsc&utm_content=banner">
-    <img src="assets/banner-1.jpg" alt="Skip setup — try the hosted MCP server with one-click Google sign-in. Works in ChatGPT and Claude web. Includes GA4 and advanced SEO tools." width="800" style="margin: 20px 0; border-radius: 8px;">
-  </a>
-</div>
 
 ---
 

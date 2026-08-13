@@ -25,6 +25,13 @@ its tools are unchanged.
    fork behaviour in `gsc_remote/`. The seams into upstream are runtime
    monkeypatches, not source edits. Periodically:
    `git fetch upstream && git rebase upstream/main`.
+
+   Two documented exceptions, both in `README.md`, both cheap to re-apply:
+   the orientation banner at the top (upstream's README describes the local
+   stdio server, which would otherwise be the only thing a reader sees), and
+   the removal of upstream's advertisements for a competing hosted GSC MCP
+   service. Nothing else in an upstream file changes. On a rebase, keep the
+   banner, drop re-introduced ads, take upstream's changes in between.
 3. **Never commit to `main`.** Always work on a branch, open a PR, merge the PR
    — even for docs.
 4. **TDD.** Write a failing test first, then the implementation. Keep the suite
@@ -54,7 +61,11 @@ This fork's additions (`gsc_remote/`):
 - `statebinding.py` — cookie that ties the Google federation leg to the
   browser that began it.
 
-Tests: `tests/remote/*_test.py`. Run them with `uv run pytest -q`. Image: `Dockerfile.remote`. Deployment lives in
+Tests: `tests/remote/*_test.py`. Run them with `uv run pytest -q`.
+
+Docs: `DEPLOY.md` (first-time setup), `docs/OPERATIONS.md` (running it, and
+what to do when it breaks), `docs/superpowers/specs/` (why it is built this
+way). Image: `Dockerfile.remote`. Deployment lives in
 the `Klartika/infra-ops` repo under `gsc-mcp/`.
 
 ## Security posture
