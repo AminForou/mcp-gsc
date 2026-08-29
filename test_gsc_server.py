@@ -422,6 +422,42 @@ class TestInspectUrl(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data["page_url"], "https://example.com/page/")
         self.assertIn("last_crawled", data)
 
+    async def test_reports_rich_result_issues(self):
+        mod = _load_module()
+        service = _make_service()
+        service.urlInspection().index().inspect().execute.return_value = {
+            "inspectionResult": {
+                "indexStatusResult": {"verdict": "PASS"},
+                "richResultsResult": {
+                    "verdict": "PASS",
+                    "detectedItems": [
+                        {
+                            "richResultType": "Merchant listings",
+                            "items": [
+                                {
+                                    "name": "Example product",
+                                    "issues": [
+                                        {
+                                            "issueMessage": "Missing field 'shippingDetails'",
+                                            "severity": "WARNING",
+                                        }
+                                    ],
+                                }
+                            ],
+                        }
+                    ],
+                },
+            }
+        }
+        with patch("gsc_server.get_gsc_service", return_value=service):
+            result = await mod.inspect_url_enhanced("https://example.com/", "https://example.com/page/")
+        issues = json.loads(result)["rich_results"]["issues"]
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0]["severity"], "WARNING")
+        self.assertEqual(issues[0]["message"], "Missing field 'shippingDetails'")
+        self.assertEqual(issues[0]["type"], "Merchant listings")
+        self.assertEqual(issues[0]["item"], "Example product")
+
 
 # ---------------------------------------------------------------------------
 # TestBatchUrlInspection
