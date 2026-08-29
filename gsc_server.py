@@ -677,9 +677,20 @@ async def inspect_url_enhanced(site_url: str, page_url: str) -> str:
                     item.get("richResultType", "Unknown")
                     for item in rich.get("detectedItems", [])
                 ],
+                # Issues are nested under detectedItems[].items[].issues[] and the
+                # message key is "issueMessage". Reading a top-level
+                # "richResultsIssues" key -- which the API never returns -- made this
+                # list always empty, hiding every rich-result problem.
                 "issues": [
-                    {"severity": issue.get("severity"), "message": issue.get("message")}
-                    for issue in rich.get("richResultsIssues", [])
+                    {
+                        "type": detected.get("richResultType", "Unknown"),
+                        "item": item.get("name"),
+                        "severity": issue.get("severity"),
+                        "message": issue.get("issueMessage"),
+                    }
+                    for detected in rich.get("detectedItems", [])
+                    for item in detected.get("items", [])
+                    for issue in item.get("issues", [])
                 ],
             }
 
