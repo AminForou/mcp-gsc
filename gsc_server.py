@@ -631,6 +631,39 @@ async def get_sitemaps(site_url: str) -> str:
             return _site_not_found_error(site_url)
         return f"Error retrieving sitemaps: {str(e)}"
 
+def _rich_results_summary(inspection: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Shape the richResultsResult of a URL inspection into a reportable summary.
+
+    Shared by inspect_url_enhanced and batch_url_inspection so both tools report the
+    same thing for the same page.
+
+    Issues are nested under detectedItems[].items[].issues[] and the message key is
+    "issueMessage". Reading a top-level "richResultsIssues" key -- which the API never
+    returns -- made this list always empty, hiding every rich-result problem.
+    """
+    if "richResultsResult" not in inspection:
+        return None
+
+    rich = inspection["richResultsResult"]
+    return {
+        "verdict": rich.get("verdict", "UNKNOWN"),
+        "detected_types": [
+            item.get("richResultType", "Unknown")
+            for item in rich.get("detectedItems", [])
+        ],
+        "issues": [
+            {
+                "type": detected.get("richResultType", "Unknown"),
+                "item": item.get("name"),
+                "severity": issue.get("severity"),
+                "message": issue.get("issueMessage"),
+            }
+            for detected in rich.get("detectedItems", [])
+            for item in detected.get("items", [])
+            for issue in item.get("issues", [])
+        ],
+    }
+
 @mcp.tool()
 async def inspect_url_enhanced(site_url: str, page_url: str) -> str:
     """
@@ -668,31 +701,7 @@ async def inspect_url_enhanced(site_url: str, page_url: str) -> str:
             except Exception:
                 last_crawled = index_status["lastCrawlTime"]
 
-        rich_results = None
-        if "richResultsResult" in inspection:
-            rich = inspection["richResultsResult"]
-            rich_results = {
-                "verdict": rich.get("verdict", "UNKNOWN"),
-                "detected_types": [
-                    item.get("richResultType", "Unknown")
-                    for item in rich.get("detectedItems", [])
-                ],
-                # Issues are nested under detectedItems[].items[].issues[] and the
-                # message key is "issueMessage". Reading a top-level
-                # "richResultsIssues" key -- which the API never returns -- made this
-                # list always empty, hiding every rich-result problem.
-                "issues": [
-                    {
-                        "type": detected.get("richResultType", "Unknown"),
-                        "item": item.get("name"),
-                        "severity": issue.get("severity"),
-                        "message": issue.get("issueMessage"),
-                    }
-                    for detected in rich.get("detectedItems", [])
-                    for item in detected.get("items", [])
-                    for issue in item.get("issues", [])
-                ],
-            }
+        rich_results = _rich_results_summary(inspection)
 
         return json.dumps({
             "page_url": page_url,
@@ -771,20 +780,16 @@ async def batch_url_inspection(site_url: str, urls: str) -> str:
                     except:
                         last_crawl = index_status["lastCrawlTime"]
                 
-                # Check for rich results
-                rich_results = "None"
-                if "richResultsResult" in inspection:
-                    rich = inspection["richResultsResult"]
-                    if rich.get("verdict") == "PASS" and "detectedItems" in rich and rich["detectedItems"]:
-                        rich_types = [item.get("richResultType", "Unknown") for item in rich["detectedItems"]]
-                        rich_results = ", ".join(rich_types)
-                
+                # Rich results, in the same shape inspect_url_enhanced reports.
+                # The old summary only kept the detected type names, and only when
+                # the rich-result verdict was PASS -- so a page Google fails came
+                # back as "None", the one state that reads as "nothing to see here".
                 results.append({
                     "url": page_url,
-                    "verdict": verdict,
+                    "index_verdict": verdict,
                     "coverage_state": coverage,
                     "last_crawled": last_crawl,
-                    "rich_results": rich_results,
+                    "rich_results": _rich_results_summary(inspection),
                 })
 
             except Exception as e:

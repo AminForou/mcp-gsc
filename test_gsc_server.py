@@ -484,7 +484,51 @@ class TestBatchUrlInspection(unittest.IsolatedAsyncioTestCase):
             )
         data = json.loads(result)
         self.assertEqual(data["count"], 2)
-        self.assertEqual(data["results"][0]["verdict"], "PASS")
+        self.assertEqual(data["results"][0]["index_verdict"], "PASS")
+
+    async def test_reports_failing_rich_results(self):
+        mod = _load_module()
+        service = _make_service()
+        service.urlInspection().index().inspect().execute.return_value = {
+            "inspectionResult": {
+                "indexStatusResult": {
+                    "verdict": "PASS",
+                    "coverageState": "Submitted and indexed",
+                },
+                "richResultsResult": {
+                    "verdict": "FAIL",
+                    "detectedItems": [
+                        {
+                            "richResultType": "Merchant listings",
+                            "items": [
+                                {
+                                    "name": "Example product",
+                                    "issues": [
+                                        {
+                                            "issueMessage": "Missing field 'image'",
+                                            "severity": "ERROR",
+                                        }
+                                    ],
+                                }
+                            ],
+                        }
+                    ],
+                },
+            }
+        }
+        with patch("gsc_server.get_gsc_service", return_value=service):
+            result = await mod.batch_url_inspection(
+                "https://example.com/", "https://example.com/page/"
+            )
+        row = json.loads(result)["results"][0]
+        self.assertEqual(row["index_verdict"], "PASS")
+        self.assertEqual(row["rich_results"]["verdict"], "FAIL")
+        self.assertEqual(row["rich_results"]["detected_types"], ["Merchant listings"])
+        self.assertEqual(len(row["rich_results"]["issues"]), 1)
+        self.assertEqual(row["rich_results"]["issues"][0]["severity"], "ERROR")
+        self.assertEqual(
+            row["rich_results"]["issues"][0]["message"], "Missing field 'image'"
+        )
 
     async def test_batch_limit_enforced_at_10_urls(self):
         mod = _load_module()
