@@ -776,5 +776,115 @@ class TestStdoutClean(unittest.TestCase):
         self.assertEqual(stdout_output, "", f"Unexpected stdout: {stdout_output!r}")
 
 
+# ---------------------------------------------------------------------------
+# TestMain — MCP_TRANSPORT selection
+# ---------------------------------------------------------------------------
+
+class TestMain(unittest.TestCase):
+    """main() maps each MCP_TRANSPORT value to the right mcp.run() transport.
+
+    mcp.run is always mocked so no server ever starts. main() reads MCP_* from
+    os.environ at call time, so each test keeps the vars live around the main()
+    call (not just around module import, which is all _load_module does).
+    """
+
+    def _load_and_patch(self, overrides):
+        mod = _load_module(overrides)
+        env_ctx = patch.dict(os.environ, overrides, clear=False)
+        run_ctx = patch.object(mod.mcp, "run")
+        env_ctx.start()
+        mock_run = run_ctx.start()
+        self.addCleanup(env_ctx.stop)
+        self.addCleanup(run_ctx.stop)
+        return mod, mock_run
+
+    def test_default_is_stdio(self):
+        mod, mock_run = self._load_and_patch({})
+        os.environ.pop("MCP_TRANSPORT", None)  # restored by patch.dict cleanup
+        mod.main()
+        mock_run.assert_called_once_with(transport="stdio")
+
+    def test_explicit_stdio(self):
+        mod, mock_run = self._load_and_patch({"MCP_TRANSPORT": "stdio"})
+        mod.main()
+        mock_run.assert_called_once_with(transport="stdio")
+
+    def test_sse(self):
+        mod, mock_run = self._load_and_patch({"MCP_TRANSPORT": "sse"})
+        mod.main()
+        mock_run.assert_called_once_with(transport="sse")
+
+    def test_streamable_http(self):
+        mod, mock_run = self._load_and_patch({"MCP_TRANSPORT": "streamable-http"})
+        mod.main()
+        mock_run.assert_called_once_with(transport="streamable-http")
+
+    def test_http_alias_maps_to_streamable_http(self):
+        mod, mock_run = self._load_and_patch({"MCP_TRANSPORT": "http"})
+        mod.main()
+        mock_run.assert_called_once_with(transport="streamable-http")
+
+    def test_transport_value_is_case_insensitive(self):
+        mod, mock_run = self._load_and_patch({"MCP_TRANSPORT": "Streamable-HTTP"})
+        mod.main()
+        mock_run.assert_called_once_with(transport="streamable-http")
+
+    def test_invalid_transport_raises_and_does_not_run(self):
+        mod, mock_run = self._load_and_patch({"MCP_TRANSPORT": "carrier-pigeon"})
+        with self.assertRaises(ValueError):
+            mod.main()
+        mock_run.assert_not_called()
+
+    def test_invalid_port_raises(self):
+        mod, mock_run = self._load_and_patch(
+            {"MCP_TRANSPORT": "stdio", "MCP_PORT": "not-a-number"}
+        )
+        with self.assertRaises(ValueError):
+            mod.main()
+
+    def test_host_and_port_applied_for_streamable_http(self):
+        mod, _ = self._load_and_patch(
+            {"MCP_TRANSPORT": "streamable-http", "MCP_HOST": "127.0.0.1", "MCP_PORT": "4567"}
+        )
+        mod.main()
+        self.assertEqual(mod.mcp.settings.host, "127.0.0.1")
+        self.assertEqual(mod.mcp.settings.port, 4567)
+
+    def test_streamable_http_keeps_dns_rebinding_protection_on_loopback(self):
+        mod, _ = self._load_and_patch(
+            {"MCP_TRANSPORT": "streamable-http", "MCP_HOST": "127.0.0.1"}
+        )
+        mod.main()
+        self.assertTrue(mod.mcp.settings.transport_security.enable_dns_rebinding_protection)
+
+    def test_sse_still_disables_dns_rebinding_protection(self):
+        mod, _ = self._load_and_patch({"MCP_TRANSPORT": "sse", "MCP_HOST": "0.0.0.0"})
+        mod.main()
+        self.assertFalse(mod.mcp.settings.transport_security.enable_dns_rebinding_protection)
+
+    def test_non_loopback_host_widens_allowlist_without_disabling(self):
+        mod, _ = self._load_and_patch(
+            {"MCP_TRANSPORT": "streamable-http", "MCP_HOST": "10.0.0.5"}
+        )
+        mod.main()
+        security = mod.mcp.settings.transport_security
+        self.assertTrue(security.enable_dns_rebinding_protection)
+        self.assertIn("10.0.0.5:*", security.allowed_hosts)
+
+    def test_mcp_allowed_hosts_env_var_is_honored(self):
+        mod, _ = self._load_and_patch(
+            {
+                "MCP_TRANSPORT": "streamable-http",
+                "MCP_HOST": "0.0.0.0",
+                "MCP_ALLOWED_HOSTS": "gsc.example.com:*, gsc.example.com",
+            }
+        )
+        mod.main()
+        security = mod.mcp.settings.transport_security
+        self.assertTrue(security.enable_dns_rebinding_protection)
+        self.assertIn("gsc.example.com:*", security.allowed_hosts)
+        self.assertIn("gsc.example.com", security.allowed_hosts)
+
+
 if __name__ == "__main__":
     unittest.main()
