@@ -185,20 +185,27 @@ docker run -e MCP_TRANSPORT=sse -e MCP_PORT=3001 \
 | **baseline** (before any change, `b3f2ab8`) | `pytest test_gsc_server.py -v` | **43 passed** |
 | **after** | `pytest test_gsc_server.py -v` | **56 passed** (43 + 13 new in `TestMain`) |
 
-End-to-end, against Google Search Console (`https://itinereo.com/`, service
-account auth), MCP Inspector CLI driving both transports:
+End-to-end, against Google Search Console (`https://itinereo.com/`), MCP
+Inspector CLI driving both transports. Run once with **service-account** auth
+and once with **OAuth** auth — both transports byte-identical each time:
 
 | call | streamable-http (`/mcp`) | stdio | match |
 |---|---|---|---|
 | `tools/list` | 21 tools | 21 tools | identical (names + full schemas) |
-| `list_properties` | 6 properties | 6 properties | identical (GSC API returns them unordered) |
-| `get_search_analytics` (28 d, `query`) | 20 rows | 20 rows | **byte-identical** |
+| `list_properties` (service account) | 6 properties | 6 properties | identical (GSC API returns them unordered) |
+| `list_properties` (OAuth) | 13 properties | 13 properties | identical |
+| `get_search_analytics` (28 d, `query`) | 20 rows | 20 rows | **byte-identical** per run |
+
+(The OAuth account sees more properties than the service account — the SA only
+has the ones explicitly shared with it. `get_search_analytics` rows drift by a
+row or two *between* runs because `dataState=all` includes unconfirmed fresh
+data; stdio vs streamable-http at the same instant always match exactly.)
 
 - DNS-rebinding protection verified live on streamable-http: `Host: 127.0.0.1:3001`
   → 200, `Host: evil.example.com` → **421**.
 - `claude mcp add --transport http gsc-http http://127.0.0.1:3001/mcp` →
   `claude mcp list` shows **✔ Connected**; a headless `claude -p` session called
-  `list_properties` through it and got the 6 properties back.
+  `list_properties` through it and got the properties back.
 
 ### Environment notes (this machine — Windows 11)
 
@@ -214,20 +221,26 @@ account auth), MCP Inspector CLI driving both transports:
   but occasionally hits the same WDAC block on the ephemeral interpreter. Reliable
   fallbacks: `uv pip install pytest && .venv\Scripts\python.exe -m pytest …`, or
   the zero-dependency `python -m unittest test_gsc_server -v`.
-- **Stale env var:** a persistent *User* environment variable
-  `GSC_OAUTH_CLIENT_SECRETS_FILE=C:\Users\ricar\Documents\client_secret_123456-abc.apps.googleusercontent.com.json`
-  points at a non-existent placeholder file. `get_gsc_service()` fails **fast**
-  when that path is set-but-missing (before the service-account fallback), so the
-  server errors out until it is fixed. Set it to a real path, or delete it:
-  `setx GSC_OAUTH_CLIENT_SECRETS_FILE ""` (or remove it via *Editar variáveis de
-  ambiente do sistema*), then open a new shell.
-- **OAuth for this test:** the Desktop-app OAuth client hit
-  `Erro 403: access_denied` at Google's consent screen (app configuration
-  incomplete in the new Google Auth Platform console). The E2E run used the
-  **service-account** path instead
-  (`GSC_SKIP_OAUTH=true` + `GSC_CREDENTIALS_PATH`), with the service account
-  `ga-mcp-reader@ga-mcp-reader-507111.iam.gserviceaccount.com` added as a user on
-  the GSC property. The OAuth path is still in place and unchanged in the code.
+- **Stale env var (fixed):** a persistent *User* environment variable
+  `GSC_OAUTH_CLIENT_SECRETS_FILE` pointed at a non-existent placeholder file
+  (`…\client_secret_123456-abc.apps.googleusercontent.com.json`).
+  `get_gsc_service()` fails **fast** when that path is set-but-missing (before the
+  service-account fallback), so the server errored out on every plain run. It was
+  removed from `HKCU\Environment`; processes started before that (an open VS Code
+  / terminal / Claude Desktop) still carry the old value until restarted.
+- **Auth used for the E2E:** both paths were exercised.
+  - *Service account* (`GSC_SKIP_OAUTH=true` + `GSC_CREDENTIALS_PATH`), SA
+    `ga-mcp-reader@ga-mcp-reader-507111.iam.gserviceaccount.com` added as a user
+    on the GSC properties → sees 6 properties.
+  - *OAuth* (Desktop-app client, `InstalledAppFlow.run_local_server`). First
+    attempt hit `Erro 403: access_denied` because the Google Auth Platform
+    consent screen was incomplete (custom logo forcing verification + unfinished
+    branding). After trimming the consent screen to the minimum (app name +
+    support email + developer contact, **no logo**, no app-domain links,
+    publishing status *Testing*, the account added as a test user) the flow
+    completed and wrote a token with a `refresh_token`. Token lives at
+    `%LOCALAPPDATA%\mcp-gsc\mcp-gsc\token.json` (platformdirs, app `mcp-gsc`) →
+    OAuth account sees 13 properties.
 
 ---
 
