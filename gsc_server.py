@@ -1670,8 +1670,65 @@ async def reauthenticate() -> str:
         return f"Error during reauthentication: {str(e)}"
 
 
+# Host values that mean "loopback only". The SDK's default DNS-rebinding
+# allowlist already covers these, so the Streamable HTTP branch leaves the
+# protection untouched when MCP_HOST is one of them.
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "[::1]"}
+
+
+def _configure_streamable_http_security(host: str) -> None:
+    """Tune FastMCP's DNS-rebinding protection for the Streamable HTTP transport.
+
+    The SDK ships this protection ON, with a Host/Origin allowlist limited to
+    loopback — exactly what we want for the default 127.0.0.1 bind, so we leave
+    it alone there. When the operator deliberately binds a non-loopback interface
+    via MCP_HOST, we keep the protection ON and *widen* the allowlist to include
+    that host (plus anything in the optional MCP_ALLOWED_HOSTS / MCP_ALLOWED_ORIGINS
+    for reverse-proxy or public-domain setups) rather than disabling it wholesale
+    the way the legacy SSE branch does. See NOTES.md and issues #30 / #33.
+    """
+    security = getattr(mcp.settings, "transport_security", None)
+    if security is None:
+        return
+
+    extra_hosts = [h.strip() for h in os.environ.get("MCP_ALLOWED_HOSTS", "").split(",") if h.strip()]
+    extra_origins = [o.strip() for o in os.environ.get("MCP_ALLOWED_ORIGINS", "").split(",") if o.strip()]
+
+    if host.lower() not in _LOOPBACK_HOSTS:
+        if host not in {"0.0.0.0", "::"}:
+            # A concrete non-loopback address/name: trust the Host header for it.
+            extra_hosts.append(f"{host}:*")
+            extra_origins.extend([f"http://{host}:*", f"https://{host}:*"])
+        elif not extra_hosts:
+            # "All interfaces" — the real Host header is some other name we can't
+            # infer, so the operator has to name it via MCP_ALLOWED_HOSTS.
+            logging.warning(
+                "MCP_HOST=%s binds all interfaces but MCP_ALLOWED_HOSTS is unset; "
+                "remote clients will be rejected with HTTP 421 by DNS-rebinding "
+                "protection. Set MCP_ALLOWED_HOSTS to the hostname clients use.",
+                host,
+            )
+
+    for h in extra_hosts:
+        if h not in security.allowed_hosts:
+            security.allowed_hosts.append(h)
+    for o in extra_origins:
+        if o not in security.allowed_origins:
+            security.allowed_origins.append(o)
+
+
 def main():
-    """Entry point for the MCP server. Supports stdio (default) and SSE transports."""
+    """Entry point for the MCP server.
+
+    The transport is chosen by the MCP_TRANSPORT env var:
+      - "stdio" (default): local subprocess transport, unchanged.
+      - "streamable-http" (alias "http"): remote transport over HTTP, served at
+        http://MCP_HOST:MCP_PORT/mcp (defaults 127.0.0.1:3001). DNS-rebinding
+        protection stays enabled — see _configure_streamable_http_security.
+      - "sse": legacy Server-Sent Events transport, kept unchanged for existing
+        Docker/README users.
+    MCP_HOST / MCP_PORT apply to the two network transports.
+    """
     transport = os.environ.get("MCP_TRANSPORT", "stdio").lower()
     host = os.environ.get("MCP_HOST", "127.0.0.1")
     try:
@@ -1681,7 +1738,16 @@ def main():
 
     if transport == "stdio":
         mcp.run(transport="stdio")
-    elif transport in {"sse", "http"}:
+    elif transport in {"streamable-http", "http"}:
+        # Streamable HTTP transport (MCP spec 2025-03-26), served by FastMCP at
+        # mcp.settings.streamable_http_path (default "/mcp"). Unlike the legacy
+        # SSE branch below, DNS-rebinding protection stays ENABLED; it is only
+        # widened for a non-loopback MCP_HOST. See NOTES.md and issues #30 / #33.
+        mcp.settings.host = host
+        mcp.settings.port = port
+        _configure_streamable_http_security(host)
+        mcp.run(transport="streamable-http")
+    elif transport == "sse":
         # mcp SDK >= 1.27 removed the host/port kwargs from run() (they must be
         # set on mcp.settings instead) and enabled DNS-rebinding protection with
         # a Host allowlist of localhost only — which 421s the remote/Docker
@@ -1697,7 +1763,7 @@ def main():
     else:
         raise ValueError(
             f"Unknown MCP_TRANSPORT '{transport}'. "
-            "Use 'stdio' (default) or 'sse'."
+            "Use 'stdio' (default), 'streamable-http' (alias 'http'), or 'sse'."
         )
 
 
