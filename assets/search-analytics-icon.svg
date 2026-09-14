@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120" viewBox="0 0 120 120" role="img" aria-label="Search analytics icon">
+  <rect width="120" height="120" rx="4" fill="#0f1114"/>
+  <g fill="none" stroke="#f3b33d" stroke-width="5" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="53" cy="52" r="27"/>
+    <path d="M73 72l24 24"/>
+    <path d="M34 61l10-10 8 6 15-16 10 7"/>
+  </g>
+</svg>
