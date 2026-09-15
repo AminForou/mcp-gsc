@@ -4,12 +4,14 @@ Tests for gsc_server.py.
 All Google API calls are mocked — no real credentials are needed to run these tests.
 Run with: pytest test_gsc_server.py -v
 """
+import asyncio
 import importlib
 import io
 import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch, PropertyMock
@@ -774,6 +776,52 @@ class TestStdoutClean(unittest.TestCase):
 
         stdout_output = captured.getvalue()
         self.assertEqual(stdout_output, "", f"Unexpected stdout: {stdout_output!r}")
+
+
+# ---------------------------------------------------------------------------
+# TestEventLoopNotBlocked
+# ---------------------------------------------------------------------------
+
+class TestEventLoopNotBlocked(unittest.IsolatedAsyncioTestCase):
+    """Blocking Google API calls must not occupy the event loop.
+
+    google-api-python-client is synchronous, so calling .execute() directly
+    inside an async tool holds the loop for the whole HTTPS round trip and
+    concurrent tool calls serialise. Routing it through _execute (which uses
+    anyio.to_thread.run_sync) lets them overlap.
+
+    This test fails if a future change puts a bare .execute() back on the loop.
+    """
+
+    BLOCKING_SECONDS = 0.3
+
+    async def test_concurrent_tool_calls_overlap(self):
+        mod = _load_module()
+        service = _make_service()
+
+        def slow_execute():
+            # Blocking, exactly like the real synchronous client.
+            time.sleep(self.BLOCKING_SECONDS)
+            return {
+                "siteEntry": [
+                    {"siteUrl": "https://example.com/", "permissionLevel": "siteOwner"}
+                ]
+            }
+
+        service.sites().list().execute.side_effect = slow_execute
+
+        with patch("gsc_server.get_gsc_service", return_value=service):
+            started = time.perf_counter()
+            await asyncio.gather(mod.list_properties(), mod.list_properties())
+            elapsed = time.perf_counter() - started
+
+        serialised = self.BLOCKING_SECONDS * 2
+        self.assertLess(
+            elapsed,
+            serialised * 0.75,
+            f"two concurrent tool calls took {elapsed:.2f}s. Serialised would be "
+            f"~{serialised:.2f}s, so the event loop is still being blocked.",
+        )
 
 
 if __name__ == "__main__":
