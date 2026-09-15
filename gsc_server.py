@@ -36,6 +36,8 @@ from googleapiclient.errors import HttpError
 logging.getLogger("googleapiclient.discovery_cache").setLevel(logging.ERROR)
 
 # MCP
+import anyio
+
 from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP("gsc-server")
@@ -249,6 +251,19 @@ def _site_not_found_error(site_url: str) -> str:
     return "\n".join(lines)
 
 
+async def _execute(request):
+    """Run a blocking googleapiclient request off the event loop.
+
+    google-api-python-client is synchronous, so calling .execute() directly
+    inside an async tool occupies the event loop for the whole HTTPS round
+    trip. anyio.to_thread.run_sync hands it to a worker thread instead, which
+    is what the MCP SDK itself does for sync tool functions.
+
+    batch_url_inspection does not use this: it already runs a synchronous
+    helper through a thread with its own service instance.
+    """
+    return await anyio.to_thread.run_sync(request.execute)
+
 @mcp.tool()
 async def get_capabilities() -> str:
     """
@@ -316,7 +331,7 @@ async def list_properties() -> str:
     """
     try:
         service = get_gsc_service()
-        site_list = service.sites().list().execute()
+        site_list = await _execute(service.sites().list())
 
         # site_list is typically something like:
         # {
@@ -362,7 +377,7 @@ async def add_site(site_url: str) -> str:
         service = get_gsc_service()
         
         # Add the site
-        response = service.sites().add(siteUrl=site_url).execute()
+        response = await _execute(service.sites().add(siteUrl=site_url))
         
         # Format the response
         result_lines = [f"Site {site_url} has been added to Search Console."]
@@ -423,7 +438,7 @@ async def delete_site(site_url: str) -> str:
         service = get_gsc_service()
         
         # Delete the site
-        service.sites().delete(siteUrl=site_url).execute()
+        await _execute(service.sites().delete(siteUrl=site_url))
         
         return f"Site {site_url} has been removed from Search Console."
     except HttpError as e:
@@ -496,7 +511,7 @@ async def get_search_analytics(site_url: str, days: int = 28, dimensions: str = 
         }
         
         # Execute request
-        response = service.searchanalytics().query(siteUrl=site_url, body=request).execute()
+        response = await _execute(service.searchanalytics().query(siteUrl=site_url, body=request))
         
         if not response.get("rows"):
             return f"No search analytics data found for {site_url} in the last {days} days."
@@ -542,7 +557,7 @@ async def get_site_details(site_url: str) -> str:
         service = get_gsc_service()
         
         # Get site details
-        site_info = service.sites().get(siteUrl=site_url).execute()
+        site_info = await _execute(service.sites().get(siteUrl=site_url))
         
         result = {
             "site_url": site_url,
@@ -582,7 +597,7 @@ async def get_sitemaps(site_url: str) -> str:
         service = get_gsc_service()
         
         # Get sitemaps list
-        sitemaps = service.sitemaps().list(siteUrl=site_url).execute()
+        sitemaps = await _execute(service.sitemaps().list(siteUrl=site_url))
         
         if not sitemaps.get("sitemap"):
             return f"No sitemaps found for {site_url}."
@@ -686,7 +701,7 @@ async def inspect_url_enhanced(site_url: str, page_url: str) -> str:
         }
         
         # Execute request
-        response = service.urlInspection().index().inspect(body=request).execute()
+        response = await _execute(service.urlInspection().index().inspect(body=request))
         
         if not response or "inspectionResult" not in response:
             return f"No inspection data found for {page_url}."
@@ -864,7 +879,7 @@ async def check_indexing_issues(site_url: str, urls: str) -> str:
             
             try:
                 # Execute request
-                response = service.urlInspection().index().inspect(body=request).execute()
+                response = await _execute(service.urlInspection().index().inspect(body=request))
                 
                 if not response or "inspectionResult" not in response:
                     issues_summary["not_indexed"].append(f"{page_url} - No inspection data found")
@@ -953,7 +968,7 @@ async def get_performance_overview(site_url: str, days: int = 28) -> str:
             "dataState": DATA_STATE
         }
         
-        total_response = service.searchanalytics().query(siteUrl=site_url, body=total_request).execute()
+        total_response = await _execute(service.searchanalytics().query(siteUrl=site_url, body=total_request))
         
         # Get by date for trend
         date_request = {
@@ -964,7 +979,7 @@ async def get_performance_overview(site_url: str, days: int = 28) -> str:
             "dataState": DATA_STATE
         }
         
-        date_response = service.searchanalytics().query(siteUrl=site_url, body=date_request).execute()
+        date_response = await _execute(service.searchanalytics().query(siteUrl=site_url, body=date_request))
         
         if not total_response.get("rows"):
             return f"No performance data available for {site_url} in the last {days} days."
@@ -1111,7 +1126,7 @@ async def get_advanced_search_analytics(
             active_filters = [single_filter]
         
         # Execute request
-        response = service.searchanalytics().query(siteUrl=site_url, body=request).execute()
+        response = await _execute(service.searchanalytics().query(siteUrl=site_url, body=request))
         
         if not response.get("rows"):
             no_data_msg = (
@@ -1224,8 +1239,8 @@ async def compare_search_periods(
         }
         
         # Execute requests
-        period1_response = service.searchanalytics().query(siteUrl=site_url, body=period1_request).execute()
-        period2_response = service.searchanalytics().query(siteUrl=site_url, body=period2_request).execute()
+        period1_response = await _execute(service.searchanalytics().query(siteUrl=site_url, body=period1_request))
+        period2_response = await _execute(service.searchanalytics().query(siteUrl=site_url, body=period2_request))
         
         period1_rows = period1_response.get("rows", [])
         period2_rows = period2_response.get("rows", [])
@@ -1359,7 +1374,7 @@ async def get_search_by_page_query(
         }
         
         # Execute request
-        response = service.searchanalytics().query(siteUrl=site_url, body=request).execute()
+        response = await _execute(service.searchanalytics().query(siteUrl=site_url, body=request))
         
         if not response.get("rows"):
             return f"No search data found for page {page_url} in the last {days} days."
@@ -1412,10 +1427,10 @@ async def list_sitemaps_enhanced(site_url: str, sitemap_index: str = None) -> st
         
         # Get sitemaps list
         if sitemap_index:
-            sitemaps = service.sitemaps().list(siteUrl=site_url, sitemapIndex=sitemap_index).execute()
+            sitemaps = await _execute(service.sitemaps().list(siteUrl=site_url, sitemapIndex=sitemap_index))
             source = f"child sitemaps from index: {sitemap_index}"
         else:
-            sitemaps = service.sitemaps().list(siteUrl=site_url).execute()
+            sitemaps = await _execute(service.sitemaps().list(siteUrl=site_url))
             source = "all submitted sitemaps"
         
         if not sitemaps.get("sitemap"):
@@ -1479,7 +1494,7 @@ async def get_sitemap_details(site_url: str, sitemap_url: str) -> str:
         service = get_gsc_service()
         
         # Get sitemap details
-        details = service.sitemaps().get(siteUrl=site_url, feedpath=sitemap_url).execute()
+        details = await _execute(service.sitemaps().get(siteUrl=site_url, feedpath=sitemap_url))
         
         if not details:
             return f"No details found for sitemap {sitemap_url}."
@@ -1532,11 +1547,11 @@ async def submit_sitemap(site_url: str, sitemap_url: str) -> str:
         service = get_gsc_service()
         
         # Submit the sitemap
-        service.sitemaps().submit(siteUrl=site_url, feedpath=sitemap_url).execute()
+        await _execute(service.sitemaps().submit(siteUrl=site_url, feedpath=sitemap_url))
         
         # Verify submission by getting details
         try:
-            details = service.sitemaps().get(siteUrl=site_url, feedpath=sitemap_url).execute()
+            details = await _execute(service.sitemaps().get(siteUrl=site_url, feedpath=sitemap_url))
             
             # Format response
             result_lines = [f"Successfully submitted sitemap: {sitemap_url}"]
@@ -1585,7 +1600,7 @@ async def delete_sitemap(site_url: str, sitemap_url: str) -> str:
         
         # First check if the sitemap exists
         try:
-            service.sitemaps().get(siteUrl=site_url, feedpath=sitemap_url).execute()
+            await _execute(service.sitemaps().get(siteUrl=site_url, feedpath=sitemap_url))
         except Exception as e:
             if "404" in str(e):
                 return f"Sitemap not found: {sitemap_url}. It may have already been deleted or was never submitted."
@@ -1593,7 +1608,7 @@ async def delete_sitemap(site_url: str, sitemap_url: str) -> str:
                 raise e
         
         # Delete the sitemap
-        service.sitemaps().delete(siteUrl=site_url, feedpath=sitemap_url).execute()
+        await _execute(service.sitemaps().delete(siteUrl=site_url, feedpath=sitemap_url))
         
         return f"Successfully deleted sitemap: {sitemap_url}\n\nNote: This only removes the sitemap from Search Console. Any URLs already indexed will remain in Google's index."
     
