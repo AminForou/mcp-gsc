@@ -40,8 +40,9 @@ Set `GSC_SKIP_OAUTH=true` to force service account mode and skip OAuth entirely.
 
 1. Add an `@mcp.tool()` decorated async function anywhere in `gsc_server.py`
 2. Use `get_gsc_service()` for auth — it handles OAuth and service account automatically
-3. Return `json.dumps(result)` not formatted text strings (LLMs work better with structured data)
-4. Handle `HttpError` and return a plain string error message on failure
+3. Run the API call through `await _execute(...)`, never `.execute()` directly — `google-api-python-client` is synchronous and a bare `.execute()` blocks the event loop for the whole round trip, serialising every concurrent tool call
+4. Return `json.dumps(result)` not formatted text strings (LLMs work better with structured data)
+5. Handle `HttpError` and return a plain string error message on failure
 
 ```python
 @mcp.tool()
@@ -49,7 +50,7 @@ async def my_new_tool(site_url: str) -> str:
     """One-line description shown to the AI as the tool's purpose."""
     try:
         service = get_gsc_service()
-        result = service.someApi().someMethod(siteUrl=site_url).execute()
+        result = await _execute(service.someApi().someMethod(siteUrl=site_url))
         return json.dumps(result)
     except Exception as e:
         if "404" in str(e):
