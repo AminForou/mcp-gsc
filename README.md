@@ -9,6 +9,10 @@ A Model Context Protocol (MCP) server that connects [Google Search Console](http
 
 ## What's New
 
+### [0.4.1] — September 2026
+- **`check_indexing_issues` runs concurrently** — same fix as #31, so it no longer times out on 10-URL batches against `sc-domain:*` properties. Thanks [@kuldiph](https://github.com/kuldiph). (#55)
+- **Removed a leftover dead `orderBy`** in `get_search_by_page_query` (the Search Analytics API ignores it). Thanks [@kuldiph](https://github.com/kuldiph). (#55)
+
 ### [0.4.0] — September 2026
 - **Rich-result issues now surface** — `inspect_url_enhanced` and `batch_url_inspection` read rich-result issues from the correct API path, so markup problems are reported instead of silently dropped. Thanks [@patrickweh](https://github.com/patrickweh). (#46, #48)
 - **`batch_url_inspection` runs concurrently** — 10-URL batches no longer time out on `sc-domain:*` properties. Thanks [@remotesensei](https://github.com/remotesensei). (#31)
@@ -479,6 +483,10 @@ MIT License. See the [LICENSE](LICENSE) file for details.
 ---
 
 ## Changelog
+
+### [0.4.1] — September 2026
+- `check_indexing_issues` now inspects URLs concurrently (same fix as #31), avoiding timeouts on full 10-URL batches against `sc-domain:*` properties. (Fixes #55; thanks [@kuldiph](https://github.com/kuldiph))
+- Removed a leftover `orderBy` from `get_search_by_page_query` — a dead field the Search Analytics API ignores, matching the #54 cleanup. (Fixes #55; thanks [@kuldiph](https://github.com/kuldiph))
 
 ### [0.4.0] — September 2026
 - Fixed rich-result issue reporting in `inspect_url_enhanced` and `batch_url_inspection` — issues are read from `detectedItems[].items[].issues[]` (`issueMessage`), the key the API actually returns, so problems are no longer silently dropped. (Fixes #46, #48; thanks [@patrickweh](https://github.com/patrickweh))

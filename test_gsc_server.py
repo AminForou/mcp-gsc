@@ -581,6 +581,40 @@ class TestCheckIndexingIssues(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data["summary"]["total_checked"], 1)
         self.assertEqual(data["summary"]["indexed"], 1)
 
+    async def test_processes_all_urls_concurrently_and_aggregates(self):
+        # Concurrency mirror of #31 applied to check_indexing_issues (#55): all URLs
+        # are processed and correctly classified regardless of run order.
+        mod = _load_module()
+        service = _make_service()
+
+        def _inspect(body=None):
+            page = body["inspectionUrl"]
+            call = MagicMock()
+            if page.endswith("/blocked/"):
+                call.execute.return_value = {"inspectionResult": {"indexStatusResult": {
+                    "verdict": "FAIL", "coverageState": "Blocked by robots.txt",
+                    "robotsTxtState": "BLOCKED"}}}
+            else:
+                call.execute.return_value = {"inspectionResult": {"indexStatusResult": {
+                    "verdict": "PASS", "coverageState": "Submitted and indexed"}}}
+            return call
+
+        service.urlInspection().index().inspect.side_effect = _inspect
+        input_urls = [
+            "https://example.com/a/",
+            "https://example.com/blocked/",
+            "https://example.com/c/",
+        ]
+        with patch("gsc_server.get_gsc_service", return_value=service):
+            result = await mod.check_indexing_issues(
+                "https://example.com/", "\n".join(input_urls)
+            )
+        data = json.loads(result)
+        self.assertEqual(data["summary"]["total_checked"], 3)
+        self.assertEqual(data["summary"]["indexed"], 2)
+        self.assertEqual(data["summary"]["robots_blocked"], 1)
+        self.assertEqual(data["issues"]["robots_blocked"], ["https://example.com/blocked/"])
+
 
 # ---------------------------------------------------------------------------
 # TestGetPerformanceOverview

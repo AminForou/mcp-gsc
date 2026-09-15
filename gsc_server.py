@@ -822,6 +822,59 @@ async def batch_url_inspection(site_url: str, urls: str) -> str:
     except Exception as e:
         return f"Error performing batch inspection: {str(e)}"
 
+def _check_indexing_single_url(site_url: str, page_url: str) -> Dict[str, Optional[str]]:
+    """Inspect one URL and classify it into indexing-issue buckets.
+
+    Builds its own service so it is safe to run in a worker thread. Never raises:
+    failures are recorded under ``not_indexed``. Returns one string (or None) per
+    category so the caller can aggregate results in input order.
+    """
+    result: Dict[str, Optional[str]] = {
+        "not_indexed": None,
+        "canonical_issues": None,
+        "robots_blocked": None,
+        "fetch_issues": None,
+        "indexed": None,
+    }
+    try:
+        service = get_gsc_service()
+        request = {"inspectionUrl": page_url, "siteUrl": site_url}
+        response = service.urlInspection().index().inspect(body=request).execute()
+
+        if not response or "inspectionResult" not in response:
+            result["not_indexed"] = f"{page_url} - No inspection data found"
+            return result
+
+        inspection = response["inspectionResult"]
+        index_status = inspection.get("indexStatusResult", {})
+
+        verdict = index_status.get("verdict", "UNKNOWN")
+        coverage = index_status.get("coverageState", "Unknown")
+
+        if verdict != "PASS" or "not indexed" in coverage.lower() or "excluded" in coverage.lower():
+            result["not_indexed"] = f"{page_url} - {coverage}"
+        else:
+            result["indexed"] = page_url
+
+        google_canonical = index_status.get("googleCanonical", "")
+        user_canonical = index_status.get("userCanonical", "")
+        if google_canonical and user_canonical and google_canonical != user_canonical:
+            result["canonical_issues"] = (
+                f"{page_url} - Google chose: {google_canonical} instead of user-declared: {user_canonical}"
+            )
+
+        robots_state = index_status.get("robotsTxtState", "")
+        if robots_state == "BLOCKED":
+            result["robots_blocked"] = page_url
+
+        fetch_state = index_status.get("pageFetchState", "")
+        if fetch_state != "SUCCESSFUL":
+            result["fetch_issues"] = f"{page_url} - {fetch_state}"
+    except Exception as e:
+        result["not_indexed"] = f"{page_url} - Error: {str(e)}"
+    return result
+
+
 @mcp.tool()
 async def check_indexing_issues(site_url: str, urls: str) -> str:
     """
@@ -834,18 +887,31 @@ async def check_indexing_issues(site_url: str, urls: str) -> str:
         urls: List of URLs to check, one per line
     """
     try:
-        service = get_gsc_service()
-        
+        # Validate auth once up front (also refreshes the token so the concurrent
+        # workers below reuse it without racing on token.json).
+        get_gsc_service()
+
         # Parse URLs
         url_list = [url.strip() for url in urls.split('\n') if url.strip()]
-        
+
         if not url_list:
             return "No URLs provided for inspection."
-        
+
         if len(url_list) > 10:
             return f"Too many URLs provided ({len(url_list)}). Please limit to 10 URLs per batch to avoid API quota issues."
-        
-        # Track issues by category
+
+        # Inspect concurrently — same reasoning as batch_url_inspection (#31): the
+        # sequential loop timed out on sc-domain:* properties near the 10-URL cap.
+        semaphore = asyncio.Semaphore(_BATCH_INSPECTION_CONCURRENCY)
+
+        async def _run(page_url: str) -> Dict[str, Optional[str]]:
+            async with semaphore:
+                return await asyncio.to_thread(_check_indexing_single_url, site_url, page_url)
+
+        # asyncio.gather preserves url_list order.
+        per_url = await asyncio.gather(*[_run(u) for u in url_list])
+
+        # Aggregate the per-URL classifications by category, in input order.
         issues_summary = {
             "not_indexed": [],
             "canonical_issues": [],
@@ -853,57 +919,11 @@ async def check_indexing_issues(site_url: str, urls: str) -> str:
             "fetch_issues": [],
             "indexed": []
         }
-        
-        # Process each URL
-        for page_url in url_list:
-            # Build request
-            request = {
-                "inspectionUrl": page_url,
-                "siteUrl": site_url
-            }
-            
-            try:
-                # Execute request
-                response = service.urlInspection().index().inspect(body=request).execute()
-                
-                if not response or "inspectionResult" not in response:
-                    issues_summary["not_indexed"].append(f"{page_url} - No inspection data found")
-                    continue
-                
-                inspection = response["inspectionResult"]
-                index_status = inspection.get("indexStatusResult", {})
-                
-                # Check indexing status
-                verdict = index_status.get("verdict", "UNKNOWN")
-                coverage = index_status.get("coverageState", "Unknown")
-                
-                if verdict != "PASS" or "not indexed" in coverage.lower() or "excluded" in coverage.lower():
-                    issues_summary["not_indexed"].append(f"{page_url} - {coverage}")
-                else:
-                    issues_summary["indexed"].append(page_url)
-                
-                # Check canonical issues
-                google_canonical = index_status.get("googleCanonical", "")
-                user_canonical = index_status.get("userCanonical", "")
-                
-                if google_canonical and user_canonical and google_canonical != user_canonical:
-                    issues_summary["canonical_issues"].append(
-                        f"{page_url} - Google chose: {google_canonical} instead of user-declared: {user_canonical}"
-                    )
-                
-                # Check robots.txt status
-                robots_state = index_status.get("robotsTxtState", "")
-                if robots_state == "BLOCKED":
-                    issues_summary["robots_blocked"].append(page_url)
-                
-                # Check fetch issues
-                fetch_state = index_status.get("pageFetchState", "")
-                if fetch_state != "SUCCESSFUL":
-                    issues_summary["fetch_issues"].append(f"{page_url} - {fetch_state}")
-            
-            except Exception as e:
-                issues_summary["not_indexed"].append(f"{page_url} - Error: {str(e)}")
-        
+        for entry in per_url:
+            for category, value in entry.items():
+                if value is not None:
+                    issues_summary[category].append(value)
+
         return json.dumps({
             "site_url": site_url,
             "summary": {
@@ -1354,7 +1374,8 @@ async def get_search_by_page_query(
                 }]
             }],
             "rowLimit": min(max(1, row_limit), 500),
-            "orderBy": [{"metric": "CLICK_COUNT", "direction": "descending"}],
+            # Note: the Search Analytics query API has no orderBy field — it always
+            # returns rows sorted by clicks descending (which is what we want here).
             "dataState": DATA_STATE
         }
         
