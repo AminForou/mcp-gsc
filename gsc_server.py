@@ -1,4 +1,5 @@
 from typing import Any, Dict, List, Optional
+import asyncio
 import logging
 import os
 import json
@@ -724,11 +725,61 @@ async def inspect_url_enhanced(site_url: str, page_url: str) -> str:
             return _site_not_found_error(site_url)
         return f"Error inspecting URL: {str(e)}"
 
+# Max URLs inspected concurrently in batch_url_inspection. The URL Inspection API
+# allows 600 queries/minute per site, so 10 in-flight is comfortably within limits.
+_BATCH_INSPECTION_CONCURRENCY = 10
+
+
+def _inspect_single_url(site_url: str, page_url: str) -> Dict[str, Any]:
+    """Inspect one URL and shape the result into a row.
+
+    Builds its own Search Console service so it is safe to run in a worker thread —
+    google-api-python-client's underlying http transport is not thread-safe to share
+    across threads. Never raises: failures are returned as an ``error`` row so one bad
+    URL doesn't sink the whole batch.
+    """
+    try:
+        service = get_gsc_service()
+        request = {"inspectionUrl": page_url, "siteUrl": site_url}
+        response = service.urlInspection().index().inspect(body=request).execute()
+
+        if not response or "inspectionResult" not in response:
+            return {"url": page_url, "error": "No inspection data found"}
+
+        inspection = response["inspectionResult"]
+        index_status = inspection.get("indexStatusResult", {})
+
+        verdict = index_status.get("verdict", "UNKNOWN")
+        coverage = index_status.get("coverageState", "Unknown")
+        last_crawl = "Never"
+
+        if "lastCrawlTime" in index_status:
+            try:
+                crawl_time = datetime.fromisoformat(index_status["lastCrawlTime"].replace('Z', '+00:00'))
+                last_crawl = crawl_time.strftime('%Y-%m-%d')
+            except Exception:
+                last_crawl = index_status["lastCrawlTime"]
+
+        # Rich results, in the same shape inspect_url_enhanced reports.
+        return {
+            "url": page_url,
+            "index_verdict": verdict,
+            "coverage_state": coverage,
+            "last_crawled": last_crawl,
+            "rich_results": _rich_results_summary(inspection),
+        }
+    except Exception as e:
+        return {"url": page_url, "error": str(e)}
+
+
 @mcp.tool()
 async def batch_url_inspection(site_url: str, urls: str) -> str:
     """
     Inspect multiple URLs in batch (within API limits).
-    
+
+    URLs are inspected concurrently, so a full batch stays well under the MCP
+    client's request timeout even on slower sc-domain:* properties.
+
     Args:
         site_url: Exact GSC property URL from list_properties (e.g. "https://example.com/" or
                   "sc-domain:example.com"). Domain properties cover all subdomains — use the
@@ -736,69 +787,36 @@ async def batch_url_inspection(site_url: str, urls: str) -> str:
         urls: List of URLs to inspect, one per line
     """
     try:
-        service = get_gsc_service()
-        
+        # Validate auth once up front. This also refreshes the OAuth token a single
+        # time so the concurrent workers below reuse it without racing on token.json.
+        get_gsc_service()
+
         # Parse URLs
         url_list = [url.strip() for url in urls.split('\n') if url.strip()]
-        
+
         if not url_list:
             return "No URLs provided for inspection."
-        
+
         if len(url_list) > 10:
             return f"Too many URLs provided ({len(url_list)}). Please limit to 10 URLs per batch to avoid API quota issues."
-        
-        # Process each URL
-        results = []
-        
-        for page_url in url_list:
-            # Build request
-            request = {
-                "inspectionUrl": page_url,
-                "siteUrl": site_url
-            }
-            
-            try:
-                # Execute request with a small delay to avoid rate limits
-                response = service.urlInspection().index().inspect(body=request).execute()
-                
-                if not response or "inspectionResult" not in response:
-                    results.append(f"{page_url}: No inspection data found")
-                    continue
-                
-                inspection = response["inspectionResult"]
-                index_status = inspection.get("indexStatusResult", {})
-                
-                # Get key information
-                verdict = index_status.get("verdict", "UNKNOWN")
-                coverage = index_status.get("coverageState", "Unknown")
-                last_crawl = "Never"
-                
-                if "lastCrawlTime" in index_status:
-                    try:
-                        crawl_time = datetime.fromisoformat(index_status["lastCrawlTime"].replace('Z', '+00:00'))
-                        last_crawl = crawl_time.strftime('%Y-%m-%d')
-                    except:
-                        last_crawl = index_status["lastCrawlTime"]
-                
-                # Rich results, in the same shape inspect_url_enhanced reports.
-                # The old summary only kept the detected type names, and only when
-                # the rich-result verdict was PASS -- so a page Google fails came
-                # back as "None", the one state that reads as "nothing to see here".
-                results.append({
-                    "url": page_url,
-                    "index_verdict": verdict,
-                    "coverage_state": coverage,
-                    "last_crawled": last_crawl,
-                    "rich_results": _rich_results_summary(inspection),
-                })
 
-            except Exception as e:
-                results.append({"url": page_url, "error": str(e)})
+        # Inspect concurrently. The URL Inspection API is slow (especially on
+        # sc-domain:* properties); running 10 URLs sequentially blew past the MCP
+        # client's default 60s timeout (#31). google-api-python-client is blocking,
+        # so each call runs in a worker thread with its own service instance.
+        semaphore = asyncio.Semaphore(_BATCH_INSPECTION_CONCURRENCY)
+
+        async def _run(page_url: str) -> Dict[str, Any]:
+            async with semaphore:
+                return await asyncio.to_thread(_inspect_single_url, site_url, page_url)
+
+        # asyncio.gather preserves the order of url_list.
+        results = await asyncio.gather(*[_run(u) for u in url_list])
 
         return json.dumps({
             "site_url": site_url,
             "count": len(results),
-            "results": results,
+            "results": list(results),
         })
 
     except Exception as e:
@@ -1016,8 +1034,10 @@ async def get_advanced_search_analytics(
         search_type: Type of search results (WEB, IMAGE, VIDEO, NEWS, DISCOVER)
         row_limit: Maximum number of rows to return (max 25000)
         start_row: Starting row for pagination
-        sort_by: Metric to sort by (clicks, impressions, ctr, position)
-        sort_direction: Sort direction (ascending or descending)
+        sort_by: Metric to sort by (clicks, impressions, ctr, position). Applied
+                 client-side to the returned rows, since Google only sorts by clicks.
+        sort_direction: Sort direction (ascending or descending). For position,
+                 ascending puts the best (lowest) average position first.
         filter_dimension: Single filter dimension (query, page, country, device). Use 'filters' instead for multiple filters.
         filter_operator: Single filter operator (contains, equals, notContains, notEquals)
         filter_expression: Single filter expression value
@@ -1060,20 +1080,9 @@ async def get_advanced_search_analytics(
             "dataState": resolved_data_state
         }
         
-        # Add sorting
-        if sort_by:
-            metric_map = {
-                "clicks": "CLICK_COUNT",
-                "impressions": "IMPRESSION_COUNT",
-                "ctr": "CTR",
-                "position": "POSITION"
-            }
-            
-            if sort_by in metric_map:
-                request["orderBy"] = [{
-                    "metric": metric_map[sort_by],
-                    "direction": sort_direction.lower()
-                }]
+        # Sorting is applied client-side below. The Search Analytics query API has no
+        # orderBy field (it always returns rows sorted by clicks descending), so an
+        # orderBy in the request body was silently ignored (#54).
         
         # Build filter groups — multi-filter JSON takes priority over single-filter params
         active_filters = []
@@ -1131,6 +1140,14 @@ async def get_advanced_search_analytics(
             entry["position"] = round(row.get("position", 0), 1)
             rows.append(entry)
 
+        # Sort the returned rows client-side. Google only sorts by clicks descending
+        # server-side, so without this the sort_by/sort_direction args were silently
+        # ignored (#54). Sorting applies within the returned page of rows.
+        valid_sort_metrics = ("clicks", "impressions", "ctr", "position")
+        if sort_by in valid_sort_metrics:
+            reverse = sort_direction.lower() != "ascending"
+            rows.sort(key=lambda r: r.get(sort_by, 0), reverse=reverse)
+
         has_more = len(response.get("rows", [])) == row_limit
         return json.dumps({
             "site_url": site_url,
@@ -1163,15 +1180,23 @@ async def compare_search_periods(
 ) -> str:
     """
     Compare search analytics data between two time periods.
-    
+
+    Direction: Period 1 is the period you are analyzing and Period 2 is the baseline
+    you compare it against. All deltas are Period 1 relative to Period 2, and the
+    percentage baseline is Period 2. A positive value means Period 1 outperformed
+    Period 2 — more clicks/impressions, higher CTR, or a better (lower) average
+    position. For a current-vs-previous comparison, pass the current period as
+    Period 1 and the previous period as Period 2. Percentages are null when the
+    Period 2 baseline is zero.
+
     Args:
         site_url: Exact GSC property URL from list_properties (e.g. "https://example.com/" or
                   "sc-domain:example.com"). Domain properties cover all subdomains — use the
                   domain property as site_url and filter by page to analyze a specific subdomain.
-        period1_start: Start date for period 1 (YYYY-MM-DD)
-        period1_end: End date for period 1 (YYYY-MM-DD)
-        period2_start: Start date for period 2 (YYYY-MM-DD)
-        period2_end: End date for period 2 (YYYY-MM-DD)
+        period1_start: Start date for period 1 / the analyzed period (YYYY-MM-DD)
+        period1_end: End date for period 1 / the analyzed period (YYYY-MM-DD)
+        period2_start: Start date for period 2 / the baseline period (YYYY-MM-DD)
+        period2_end: End date for period 2 / the baseline period (YYYY-MM-DD)
         dimensions: Dimensions to group by (default: query)
         limit: Number of top results to compare (default: 10)
     """
@@ -1220,15 +1245,17 @@ async def compare_search_periods(
             p1_row = period1_data.get(key, {"clicks": 0, "impressions": 0, "ctr": 0, "position": 0})
             p2_row = period2_data.get(key, {"clicks": 0, "impressions": 0, "ctr": 0, "position": 0})
             
-            # Calculate differences
-            click_diff = p2_row.get("clicks", 0) - p1_row.get("clicks", 0)
-            click_pct = (click_diff / p1_row.get("clicks", 1)) * 100 if p1_row.get("clicks", 0) > 0 else float('inf')
+            # Differences are Period 1 relative to Period 2, with Period 2 as the
+            # baseline. A positive value always means Period 1 outperformed Period 2
+            # (more clicks/impressions, higher CTR, or a better — i.e. lower — position).
+            click_diff = p1_row.get("clicks", 0) - p2_row.get("clicks", 0)
+            click_pct = (click_diff / p2_row.get("clicks", 1)) * 100 if p2_row.get("clicks", 0) > 0 else float('inf')
             
-            imp_diff = p2_row.get("impressions", 0) - p1_row.get("impressions", 0)
-            imp_pct = (imp_diff / p1_row.get("impressions", 1)) * 100 if p1_row.get("impressions", 0) > 0 else float('inf')
+            imp_diff = p1_row.get("impressions", 0) - p2_row.get("impressions", 0)
+            imp_pct = (imp_diff / p2_row.get("impressions", 1)) * 100 if p2_row.get("impressions", 0) > 0 else float('inf')
             
-            ctr_diff = p2_row.get("ctr", 0) - p1_row.get("ctr", 0)
-            pos_diff = p1_row.get("position", 0) - p2_row.get("position", 0)  # Note: lower position is better
+            ctr_diff = p1_row.get("ctr", 0) - p2_row.get("ctr", 0)
+            pos_diff = p2_row.get("position", 0) - p1_row.get("position", 0)  # lower position is better, so positive = Period 1 improved
             
             comparison_data.append({
                 "key": key,
@@ -1519,7 +1546,7 @@ async def submit_sitemap(site_url: str, sitemap_url: str) -> str:
                 try:
                     dt = datetime.fromisoformat(details["lastSubmitted"].replace('Z', '+00:00'))
                     result_lines.append(f"Submission time: {dt.strftime('%Y-%m-%d %H:%M')}")
-                except:
+                except Exception:
                     result_lines.append(f"Submission time: {details['lastSubmitted']}")
             
             # Add processing status
@@ -1530,7 +1557,7 @@ async def submit_sitemap(site_url: str, sitemap_url: str) -> str:
             result_lines.append("\nNote: Google may take some time to process the sitemap. Check back later for full details.")
             
             return "\n".join(result_lines)
-        except:
+        except Exception:
             # If we can't get details, just return basic success message
             return f"Successfully submitted sitemap: {sitemap_url}\n\nGoogle will queue it for processing."
     

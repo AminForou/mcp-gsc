@@ -9,6 +9,14 @@ A Model Context Protocol (MCP) server that connects [Google Search Console](http
 
 ## What's New
 
+### [0.4.0] — September 2026
+- **Rich-result issues now surface** — `inspect_url_enhanced` and `batch_url_inspection` read rich-result issues from the correct API path, so markup problems are reported instead of silently dropped. Thanks [@patrickweh](https://github.com/patrickweh). (#46, #48)
+- **`batch_url_inspection` runs concurrently** — 10-URL batches no longer time out on `sc-domain:*` properties. Thanks [@remotesensei](https://github.com/remotesensei). (#31)
+- **`compare_search_periods` deltas fixed** — Period 1 is now the analyzed period and Period 2 the baseline, so growth reads as growth (not decline). Thanks [@JKdreaming](https://github.com/JKdreaming). (#42)
+- **`get_advanced_search_analytics` sorting works** — `sort_by`/`sort_direction` are now applied instead of silently ignored. Thanks [@kuldiph](https://github.com/kuldiph). (#54)
+- **Hardened error handling** — replaced bare `except:` clauses so fatal signals aren't swallowed. Thanks [@kuldiph](https://github.com/kuldiph). (#53)
+- **Note:** `batch_url_inspection` renames the per-URL `verdict` field to `index_verdict` to distinguish it from the rich-result verdict.
+
 ### [0.3.3] — July 2026
 - **Fixed fresh installs broken by `mcp` 2.0** — pinned `mcp[cli]<2.0.0`. The `mcp` SDK 2.0.0 (released 2026-07-28) removed the `mcp.server.fastmcp` module, so every fresh `uvx mcp-search-console` install crashed on startup with `ModuleNotFoundError: No module named 'mcp.server.fastmcp'`. New installs now resolve a working 1.x SDK again — no `--with "mcp<2"` workaround needed.
 
@@ -458,6 +466,10 @@ docker run \
 
 Found a bug or have an idea for improvement? Open an issue or submit a pull request on GitHub.
 
+Thanks to everyone who has reported issues and contributed fixes, including
+[@patrickweh](https://github.com/patrickweh), [@remotesensei](https://github.com/remotesensei),
+[@JKdreaming](https://github.com/JKdreaming), and [@kuldiph](https://github.com/kuldiph).
+
 ---
 
 ## License
@@ -467,6 +479,14 @@ MIT License. See the [LICENSE](LICENSE) file for details.
 ---
 
 ## Changelog
+
+### [0.4.0] — September 2026
+- Fixed rich-result issue reporting in `inspect_url_enhanced` and `batch_url_inspection` — issues are read from `detectedItems[].items[].issues[]` (`issueMessage`), the key the API actually returns, so problems are no longer silently dropped. (Fixes #46, #48; thanks [@patrickweh](https://github.com/patrickweh))
+- `batch_url_inspection` now inspects URLs concurrently, so full 10-URL batches complete within the client timeout even on slower `sc-domain:*` properties. (Fixes #31; thanks [@remotesensei](https://github.com/remotesensei))
+- `compare_search_periods` now computes deltas as Period 1 relative to Period 2 (Period 2 as the percentage baseline, positive = Period 1 better), with the direction documented. (Fixes #42; thanks [@JKdreaming](https://github.com/JKdreaming))
+- `get_advanced_search_analytics` applies `sort_by`/`sort_direction` client-side instead of sending an `orderBy` the Search Analytics API ignores. (Fixes #54; thanks [@kuldiph](https://github.com/kuldiph))
+- Replaced three bare `except:` clauses with `except Exception:` so `KeyboardInterrupt`/`SystemExit` are no longer swallowed. (Fixes #53; thanks [@kuldiph](https://github.com/kuldiph))
+- **Breaking:** `batch_url_inspection` renames the per-URL `verdict` field to `index_verdict`.
 
 ### [0.3.3] — July 2026
 - Pinned `mcp[cli]>=1.3.0,<2.0.0`. The `mcp` SDK 2.0.0 removed `mcp.server.fastmcp`, breaking all fresh `uvx` installs with `ModuleNotFoundError`. Capping below 2.0 restores working installs. (Fixes #41)
