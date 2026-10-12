@@ -717,6 +717,7 @@ async def inspect_url_enhanced(site_url: str, page_url: str) -> str:
             "google_canonical": index_status.get("googleCanonical"),
             "user_canonical": index_status.get("userCanonical"),
             "crawled_as": index_status.get("crawledAs"),
+            "referring_sitemaps": index_status.get("sitemap", []),
             "referring_urls": index_status.get("referringUrls", [])[:5],
             "rich_results": rich_results,
         })
@@ -766,6 +767,7 @@ def _inspect_single_url(site_url: str, page_url: str) -> Dict[str, Any]:
             "index_verdict": verdict,
             "coverage_state": coverage,
             "last_crawled": last_crawl,
+            "referring_sitemaps": index_status.get("sitemap", []),
             "rich_results": _rich_results_summary(inspection),
         }
     except Exception as e:
