@@ -645,6 +645,29 @@ class TestGetPerformanceOverview(unittest.IsolatedAsyncioTestCase):
 
 class TestGetAdvancedSearchAnalytics(unittest.IsolatedAsyncioTestCase):
 
+    async def test_pagination_uses_capped_request_limit(self):
+        mod = _load_module()
+        for returned_count in (25000, 24999):
+            with self.subTest(returned_count=returned_count):
+                service = _make_service()
+                service.searchanalytics().query().execute.return_value = {
+                    "rows": [{"keys": ["synthetic"], "clicks": 1}] * returned_count
+                }
+                with patch("gsc_server.get_gsc_service", return_value=service):
+                    result = await mod.get_advanced_search_analytics(
+                        "sc-domain:example.com", row_limit=30000, start_row=17
+                    )
+                body = service.searchanalytics().query.call_args.kwargs["body"]
+                self.assertEqual(body["rowLimit"], 25000)
+                pagination = json.loads(result)["pagination"]
+                self.assertEqual(pagination["row_count"], returned_count)
+                self.assertEqual(pagination["has_more"], returned_count == 25000)
+                self.assertEqual(
+                    pagination["next_start_row"],
+                    25017 if returned_count == 25000 else None,
+                )
+
+
     async def test_returns_json_with_rows(self):
         mod = _load_module()
         service = _make_service()

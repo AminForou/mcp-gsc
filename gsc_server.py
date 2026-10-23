@@ -1090,11 +1090,12 @@ async def get_advanced_search_analytics(
         dimension_list = [d.strip() for d in dimensions.split(",")]
         
         # Build request
+        effective_row_limit = min(row_limit, 25000)
         request = {
             "startDate": start_date,
             "endDate": end_date,
             "dimensions": dimension_list,
-            "rowLimit": min(row_limit, 25000),  # Cap at API maximum
+            "rowLimit": effective_row_limit,  # Cap at API maximum
             "startRow": start_row,
             "searchType": search_type.upper(),
             "dataState": resolved_data_state
@@ -1168,7 +1169,7 @@ async def get_advanced_search_analytics(
             reverse = sort_direction.lower() != "ascending"
             rows.sort(key=lambda r: r.get(sort_by, 0), reverse=reverse)
 
-        has_more = len(response.get("rows", [])) == row_limit
+        has_more = len(response.get("rows", [])) == effective_row_limit
         return json.dumps({
             "site_url": site_url,
             "date_range": {"start": start_date, "end": end_date},
@@ -1179,7 +1180,7 @@ async def get_advanced_search_analytics(
                 "start_row": start_row,
                 "row_count": len(rows),
                 "has_more": has_more,
-                "next_start_row": start_row + row_limit if has_more else None,
+                "next_start_row": start_row + effective_row_limit if has_more else None,
             },
             "rows": rows,
         })
