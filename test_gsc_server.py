@@ -1001,5 +1001,28 @@ class TestStdoutClean(unittest.TestCase):
         self.assertEqual(stdout_output, "", f"Unexpected stdout: {stdout_output!r}")
 
 
+# ---------------------------------------------------------------------------
+# TestToolSchemas
+# ---------------------------------------------------------------------------
+
+class TestToolSchemas(unittest.IsolatedAsyncioTestCase):
+
+    async def test_none_defaults_accept_null(self):
+        """A parameter that defaults to None must allow null in its schema.
+
+        Otherwise the schema advertises "default": null on a non-null type, and a
+        client that sends that value explicitly is rejected before the tool runs.
+        """
+        mod = _load_module()
+        bad = []
+        for tool in await mod.mcp.list_tools():
+            for name, prop in tool.inputSchema.get("properties", {}).items():
+                if "default" in prop and prop["default"] is None:
+                    types = [prop.get("type")] + [b.get("type") for b in prop.get("anyOf", [])]
+                    if "null" not in types:
+                        bad.append(f"{tool.name}.{name}")
+        self.assertEqual(bad, [])
+
+
 if __name__ == "__main__":
     unittest.main()

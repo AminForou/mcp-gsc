@@ -1027,19 +1027,19 @@ async def get_performance_overview(site_url: str, days: int = 28) -> str:
 @mcp.tool()
 async def get_advanced_search_analytics(
     site_url: str, 
-    start_date: str = None, 
-    end_date: str = None, 
+    start_date: str | None = None, 
+    end_date: str | None = None, 
     dimensions: str = "query", 
     search_type: str = "WEB",
     row_limit: int = 1000,
     start_row: int = 0,
     sort_by: str = "clicks",
     sort_direction: str = "descending",
-    filter_dimension: str = None,
+    filter_dimension: str | None = None,
     filter_operator: str = "contains", 
-    filter_expression: str = None,
-    filters: str = None,
-    data_state: str = None
+    filter_expression: str | None = None,
+    filters: str | None = None,
+    data_state: str | None = None
 ) -> str:
     """
     Get advanced search analytics data with sorting, filtering, and pagination.
@@ -1418,7 +1418,7 @@ async def get_search_by_page_query(
         return f"Error retrieving page query data: {str(e)}"
 
 @mcp.tool()
-async def list_sitemaps_enhanced(site_url: str, sitemap_index: str = None) -> str:
+async def list_sitemaps_enhanced(site_url: str, sitemap_index: str | None = None) -> str:
     """
     List all sitemaps for a specific Search Console property with detailed information.
     
@@ -1622,7 +1622,7 @@ async def delete_sitemap(site_url: str, sitemap_url: str) -> str:
         return f"Error deleting sitemap: {str(e)}"
 
 @mcp.tool()
-async def manage_sitemaps(site_url: str, action: str, sitemap_url: str = None, sitemap_index: str = None) -> str:
+async def manage_sitemaps(site_url: str, action: str, sitemap_url: str | None = None, sitemap_index: str | None = None) -> str:
     """
     All-in-one tool to manage sitemaps (list, get details, submit, delete).
     
