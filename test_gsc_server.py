@@ -4,12 +4,14 @@ Tests for gsc_server.py.
 All Google API calls are mocked — no real credentials are needed to run these tests.
 Run with: pytest test_gsc_server.py -v
 """
+import asyncio
 import importlib
 import io
 import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch, PropertyMock
@@ -645,6 +647,28 @@ class TestGetPerformanceOverview(unittest.IsolatedAsyncioTestCase):
 
 class TestGetAdvancedSearchAnalytics(unittest.IsolatedAsyncioTestCase):
 
+    async def test_pagination_uses_capped_request_limit(self):
+        mod = _load_module()
+        for returned_count in (25000, 24999):
+            with self.subTest(returned_count=returned_count):
+                service = _make_service()
+                service.searchanalytics().query().execute.return_value = {
+                    "rows": [{"keys": ["synthetic"], "clicks": 1}] * returned_count
+                }
+                with patch("gsc_server.get_gsc_service", return_value=service):
+                    result = await mod.get_advanced_search_analytics(
+                        "sc-domain:example.com", row_limit=30000, start_row=17
+                    )
+                body = service.searchanalytics().query.call_args.kwargs["body"]
+                self.assertEqual(body["rowLimit"], 25000)
+                pagination = json.loads(result)["pagination"]
+                self.assertEqual(pagination["row_count"], returned_count)
+                self.assertEqual(pagination["has_more"], returned_count == 25000)
+                self.assertEqual(
+                    pagination["next_start_row"],
+                    25017 if returned_count == 25000 else None,
+                )
+
     async def test_returns_json_with_rows(self):
         mod = _load_module()
         service = _make_service()
@@ -999,6 +1023,66 @@ class TestStdoutClean(unittest.TestCase):
 
         stdout_output = captured.getvalue()
         self.assertEqual(stdout_output, "", f"Unexpected stdout: {stdout_output!r}")
+
+
+# ---------------------------------------------------------------------------
+# TestToolSchemas
+# ---------------------------------------------------------------------------
+
+class TestToolSchemas(unittest.IsolatedAsyncioTestCase):
+
+    async def test_none_defaults_accept_null(self):
+        """A parameter that defaults to None must allow null in its schema.
+
+        Otherwise the schema advertises "default": null on a non-null type, and a
+        client that sends that value explicitly is rejected before the tool runs.
+        """
+        mod = _load_module()
+        bad = []
+        for tool in await mod.mcp.list_tools():
+            for name, prop in tool.inputSchema.get("properties", {}).items():
+                if "default" in prop and prop["default"] is None:
+                    types = [prop.get("type")] + [b.get("type") for b in prop.get("anyOf", [])]
+                    if "null" not in types:
+                        bad.append(f"{tool.name}.{name}")
+        self.assertEqual(bad, [])
+
+
+class TestEventLoopNotBlocked(unittest.IsolatedAsyncioTestCase):
+    """The API client is synchronous; tools must not hold the event loop.
+
+    google-api-python-client blocks for the whole HTTPS round trip. If a tool
+    calls .execute() directly, every other in-flight tool call waits on it.
+    Two concurrent calls to the same tool should therefore overlap, not
+    serialise.
+    """
+
+    BLOCKING_SECONDS = 0.3
+
+    async def test_concurrent_tool_calls_overlap(self):
+        mod = _load_module()
+        service = _make_service()
+
+        def slow_execute():
+            time.sleep(self.BLOCKING_SECONDS)
+            return {"siteEntry": [
+                {"siteUrl": "https://example.com/", "permissionLevel": "siteOwner"}
+            ]}
+
+        service.sites().list().execute.side_effect = slow_execute
+
+        with patch("gsc_server.get_gsc_service", return_value=service):
+            started = time.perf_counter()
+            await asyncio.gather(mod.list_properties(), mod.list_properties())
+            elapsed = time.perf_counter() - started
+
+        serialised = self.BLOCKING_SECONDS * 2
+        self.assertLess(
+            elapsed,
+            serialised * 0.75,
+            f"two concurrent calls took {elapsed:.2f}s; serialised would be "
+            f"~{serialised:.2f}s, so the event loop is being blocked",
+        )
 
 
 if __name__ == "__main__":

@@ -9,9 +9,12 @@ A Model Context Protocol (MCP) server that connects [Google Search Console](http
 
 ## What's New
 
-### [0.4.1] — September 2026
-- **`check_indexing_issues` runs concurrently** — same fix as #31, so it no longer times out on 10-URL batches against `sc-domain:*` properties. Thanks [@kuldiph](https://github.com/kuldiph). (#55)
-- **Removed a leftover dead `orderBy`** in `get_search_by_page_query` (the Search Analytics API ignores it). Thanks [@kuldiph](https://github.com/kuldiph). (#55)
+### [0.4.2] — November 2026
+- **Read-only OAuth tokens work again, and a failed refresh no longer deletes your token** — the server now requests only the scope it needs (read-only by default, write only when `GSC_ALLOW_DESTRUCTIVE=true`) and loads existing tokens with their granted scope, so a `webmasters.readonly` token refreshes instead of being rejected. A transient refresh failure keeps your token file instead of silently deleting it. Thanks [@christian-fastcorp](https://github.com/christian-fastcorp). (#56)
+- **Tools no longer block the event loop** — blocking Search Console API calls now run in a worker thread, so a slow request no longer stalls every other in-flight tool call. Thanks [@kuldiph](https://github.com/kuldiph). (#52)
+- **`get_advanced_search_analytics` pagination fixed when capped** — requesting more than 25,000 rows no longer drops the next page; `has_more`/`next_start_row` use the effective (capped) limit. Thanks [@dajiaohuang](https://github.com/dajiaohuang). (#62)
+- **Optional tool arguments accept an explicit `null`** — nine `str | None` parameters now validate when a client sends the advertised `null` default. Thanks [@vishalhabib99](https://github.com/vishalhabib99). (#58)
+- **Raised the `mcp[cli]` floor to `>=1.27.2`** (kept the `<2.0.0` cap) to clear four published SDK advisories. Thanks [@prateekparshwa](https://github.com/prateekparshwa). (#40)
 
 See the full version history in the [Changelog](#changelog) below.
 
@@ -469,6 +472,13 @@ MIT License. See the [LICENSE](LICENSE) file for details.
 ---
 
 ## Changelog
+
+### [0.4.2] — November 2026
+- Fixed OAuth for read-only tokens: the server now requests only the scope the enabled tools need (`webmasters.readonly` by default, the write scope only when `GSC_ALLOW_DESTRUCTIVE=true`) and loads an existing token with its granted scope, so a `webmasters.readonly` token refreshes instead of failing with `invalid_scope`. A failed refresh (or an unreadable token file) no longer deletes the token file — a transient error must not destroy a working credential. (Fixes #56; thanks [@christian-fastcorp](https://github.com/christian-fastcorp))
+- Blocking `google-api-python-client` calls now run off the event loop via a worker thread (`_execute`), so a slow request no longer stalls other concurrent tool calls. (Fixes #52; thanks [@kuldiph](https://github.com/kuldiph))
+- Fixed `get_advanced_search_analytics` pagination when `row_limit` exceeds the API cap of 25,000: `has_more` and `next_start_row` now use the effective capped limit instead of the requested one, so the next page is no longer dropped. (Fixes #62; thanks [@dajiaohuang](https://github.com/dajiaohuang))
+- Optional tool arguments annotated `str | None = None` now accept an explicit `null` from clients that send the advertised default, instead of failing argument validation. (Fixes #58; thanks [@vishalhabib99](https://github.com/vishalhabib99))
+- Raised the `mcp[cli]` dependency floor to `>=1.27.2` (keeping the `<2.0.0` cap from 0.3.3) to clear four published MCP SDK advisories. (Fixes #40; thanks [@prateekparshwa](https://github.com/prateekparshwa))
 
 ### [0.4.1] — September 2026
 - `check_indexing_issues` now inspects URLs concurrently (same fix as #31), avoiding timeouts on full 10-URL batches against `sc-domain:*` properties. (Fixes #55; thanks [@kuldiph](https://github.com/kuldiph))

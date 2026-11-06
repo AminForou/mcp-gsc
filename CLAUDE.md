@@ -40,8 +40,16 @@ Set `GSC_SKIP_OAUTH=true` to force service account mode and skip OAuth entirely.
 
 1. Add an `@mcp.tool()` decorated async function anywhere in `gsc_server.py`
 2. Use `get_gsc_service()` for auth — it handles OAuth and service account automatically
-3. Return `json.dumps(result)` not formatted text strings (LLMs work better with structured data)
-4. Handle `HttpError` and return a plain string error message on failure
+3. Run the API call as `await _execute(request)`, never `request.execute()`.
+   `google-api-python-client` is synchronous, so a bare `.execute()` inside an
+   async tool holds the event loop for the whole HTTPS round trip and blocks
+   every other tool call. `_execute` hands it to a worker thread via
+   `asyncio.to_thread`. The exception is a *synchronous* helper that a tool
+   already dispatches to a worker thread — `_inspect_single_url` and
+   `_check_indexing_single_url` call `.execute()` directly and should keep doing
+   so, since `await` is not valid in a `def`.
+4. Return `json.dumps(result)` not formatted text strings (LLMs work better with structured data)
+5. Handle `HttpError` and return a plain string error message on failure
 
 ```python
 @mcp.tool()
@@ -49,7 +57,7 @@ async def my_new_tool(site_url: str) -> str:
     """One-line description shown to the AI as the tool's purpose."""
     try:
         service = get_gsc_service()
-        result = service.someApi().someMethod(siteUrl=site_url).execute()
+        result = await _execute(service.someApi().someMethod(siteUrl=site_url))
         return json.dumps(result)
     except Exception as e:
         if "404" in str(e):

@@ -103,7 +103,15 @@ if _raw_data_state not in ("all", "final"):
     )
 DATA_STATE = _raw_data_state
 
-SCOPES = ["https://www.googleapis.com/auth/webmasters"]
+# OAuth / service-account scopes.
+# Read-only is the correct scope for the default tool set: GSC_ALLOW_DESTRUCTIVE
+# defaults to false, so every enabled tool is a read. We only request the wider
+# write scope when destructive tools are explicitly enabled. Requesting a scope
+# wider than the one actually granted makes token refresh fail with invalid_scope
+# (see issue #56), so keep this aligned with what the enabled tools really need.
+READONLY_SCOPES = ["https://www.googleapis.com/auth/webmasters.readonly"]
+WRITE_SCOPES = ["https://www.googleapis.com/auth/webmasters"]
+SCOPES = WRITE_SCOPES if ALLOW_DESTRUCTIVE else READONLY_SCOPES
 
 def get_gsc_service():
     """
@@ -182,11 +190,16 @@ def get_gsc_service_oauth():
     # Check if token file exists
     if os.path.exists(TOKEN_FILE):
         try:
-            creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
+            # Load with the scopes stored in the token file (scopes=None) rather than
+            # forcing SCOPES. If the token was granted webmasters.readonly, forcing the
+            # wider write scope makes creds.refresh() request more than was granted and
+            # Google rejects it with invalid_scope (issue #56).
+            creds = Credentials.from_authorized_user_file(TOKEN_FILE)
         except Exception as e:
-            # If token file is corrupted, delete it
-            if os.path.exists(TOKEN_FILE):
-                os.remove(TOKEN_FILE)
+            # Token file is unreadable/corrupted. Don't delete the user's file — log it
+            # and fall through to a new OAuth flow, which overwrites it on success.
+            # Silently deleting destroys data a human may want to inspect or recover.
+            logging.warning("Could not read token file %s: %s", TOKEN_FILE, e)
             creds = None
     
     # If credentials don't exist or are invalid, get new ones
@@ -198,10 +211,13 @@ def get_gsc_service_oauth():
                 with open(TOKEN_FILE, 'w') as token:
                     token.write(creds.to_json())
             except Exception as e:
-                # If refresh fails, delete the bad token and trigger new OAuth flow
-                if os.path.exists(TOKEN_FILE):
-                    os.remove(TOKEN_FILE)
-                # Fall through to the OAuth flow below
+                # Refresh failed (revoked/expired refresh token, network error, or a
+                # scope mismatch). Do NOT delete the token file — a transient failure
+                # must not destroy a working credential (issue #56). Fall through to a
+                # fresh OAuth flow, which overwrites the file on success; if that flow
+                # can't run (headless / no client secrets) the original token is left
+                # intact for debugging.
+                logging.warning("Token refresh failed: %s", e)
                 creds = None
         
         # Start new OAuth flow if we don't have valid credentials
@@ -247,6 +263,21 @@ def _site_not_found_error(site_url: str) -> str:
         "3. The authenticated account may not have access to this property."
     )
     return "\n".join(lines)
+
+
+async def _execute(request):
+    """Run a blocking googleapiclient request off the event loop.
+
+    google-api-python-client is synchronous, so calling ``.execute()`` directly
+    inside an async tool holds the event loop for the whole HTTPS round trip and
+    blocks every other in-flight tool call. ``asyncio.to_thread`` hands it to a
+    worker thread instead (the same mechanism the batch tools already use).
+
+    The batch helpers (``_inspect_single_url`` / ``_check_indexing_single_url``)
+    do NOT use this: they are synchronous functions already dispatched to worker
+    threads, each building its own service instance.
+    """
+    return await asyncio.to_thread(request.execute)
 
 
 @mcp.tool()
@@ -316,7 +347,7 @@ async def list_properties() -> str:
     """
     try:
         service = get_gsc_service()
-        site_list = service.sites().list().execute()
+        site_list = await _execute(service.sites().list())
 
         # site_list is typically something like:
         # {
@@ -362,7 +393,7 @@ async def add_site(site_url: str) -> str:
         service = get_gsc_service()
         
         # Add the site
-        response = service.sites().add(siteUrl=site_url).execute()
+        response = await _execute(service.sites().add(siteUrl=site_url))
         
         # Format the response
         result_lines = [f"Site {site_url} has been added to Search Console."]
@@ -423,7 +454,7 @@ async def delete_site(site_url: str) -> str:
         service = get_gsc_service()
         
         # Delete the site
-        service.sites().delete(siteUrl=site_url).execute()
+        await _execute(service.sites().delete(siteUrl=site_url))
         
         return f"Site {site_url} has been removed from Search Console."
     except HttpError as e:
@@ -496,7 +527,7 @@ async def get_search_analytics(site_url: str, days: int = 28, dimensions: str = 
         }
         
         # Execute request
-        response = service.searchanalytics().query(siteUrl=site_url, body=request).execute()
+        response = await _execute(service.searchanalytics().query(siteUrl=site_url, body=request))
         
         if not response.get("rows"):
             return f"No search analytics data found for {site_url} in the last {days} days."
@@ -542,7 +573,7 @@ async def get_site_details(site_url: str) -> str:
         service = get_gsc_service()
         
         # Get site details
-        site_info = service.sites().get(siteUrl=site_url).execute()
+        site_info = await _execute(service.sites().get(siteUrl=site_url))
         
         result = {
             "site_url": site_url,
@@ -582,7 +613,7 @@ async def get_sitemaps(site_url: str) -> str:
         service = get_gsc_service()
         
         # Get sitemaps list
-        sitemaps = service.sitemaps().list(siteUrl=site_url).execute()
+        sitemaps = await _execute(service.sitemaps().list(siteUrl=site_url))
         
         if not sitemaps.get("sitemap"):
             return f"No sitemaps found for {site_url}."
@@ -686,7 +717,7 @@ async def inspect_url_enhanced(site_url: str, page_url: str) -> str:
         }
         
         # Execute request
-        response = service.urlInspection().index().inspect(body=request).execute()
+        response = await _execute(service.urlInspection().index().inspect(body=request))
         
         if not response or "inspectionResult" not in response:
             return f"No inspection data found for {page_url}."
@@ -973,7 +1004,7 @@ async def get_performance_overview(site_url: str, days: int = 28) -> str:
             "dataState": DATA_STATE
         }
         
-        total_response = service.searchanalytics().query(siteUrl=site_url, body=total_request).execute()
+        total_response = await _execute(service.searchanalytics().query(siteUrl=site_url, body=total_request))
         
         # Get by date for trend
         date_request = {
@@ -984,7 +1015,7 @@ async def get_performance_overview(site_url: str, days: int = 28) -> str:
             "dataState": DATA_STATE
         }
         
-        date_response = service.searchanalytics().query(siteUrl=site_url, body=date_request).execute()
+        date_response = await _execute(service.searchanalytics().query(siteUrl=site_url, body=date_request))
         
         if not total_response.get("rows"):
             return f"No performance data available for {site_url} in the last {days} days."
@@ -1027,19 +1058,19 @@ async def get_performance_overview(site_url: str, days: int = 28) -> str:
 @mcp.tool()
 async def get_advanced_search_analytics(
     site_url: str, 
-    start_date: str = None, 
-    end_date: str = None, 
+    start_date: str | None = None, 
+    end_date: str | None = None, 
     dimensions: str = "query", 
     search_type: str = "WEB",
     row_limit: int = 1000,
     start_row: int = 0,
     sort_by: str = "clicks",
     sort_direction: str = "descending",
-    filter_dimension: str = None,
+    filter_dimension: str | None = None,
     filter_operator: str = "contains", 
-    filter_expression: str = None,
-    filters: str = None,
-    data_state: str = None
+    filter_expression: str | None = None,
+    filters: str | None = None,
+    data_state: str | None = None
 ) -> str:
     """
     Get advanced search analytics data with sorting, filtering, and pagination.
@@ -1090,11 +1121,12 @@ async def get_advanced_search_analytics(
         dimension_list = [d.strip() for d in dimensions.split(",")]
         
         # Build request
+        effective_row_limit = min(row_limit, 25000)
         request = {
             "startDate": start_date,
             "endDate": end_date,
             "dimensions": dimension_list,
-            "rowLimit": min(row_limit, 25000),  # Cap at API maximum
+            "rowLimit": effective_row_limit,  # Cap at API maximum
             "startRow": start_row,
             "searchType": search_type.upper(),
             "dataState": resolved_data_state
@@ -1131,7 +1163,7 @@ async def get_advanced_search_analytics(
             active_filters = [single_filter]
         
         # Execute request
-        response = service.searchanalytics().query(siteUrl=site_url, body=request).execute()
+        response = await _execute(service.searchanalytics().query(siteUrl=site_url, body=request))
         
         if not response.get("rows"):
             no_data_msg = (
@@ -1168,7 +1200,7 @@ async def get_advanced_search_analytics(
             reverse = sort_direction.lower() != "ascending"
             rows.sort(key=lambda r: r.get(sort_by, 0), reverse=reverse)
 
-        has_more = len(response.get("rows", [])) == row_limit
+        has_more = len(response.get("rows", [])) == effective_row_limit
         return json.dumps({
             "site_url": site_url,
             "date_range": {"start": start_date, "end": end_date},
@@ -1179,7 +1211,7 @@ async def get_advanced_search_analytics(
                 "start_row": start_row,
                 "row_count": len(rows),
                 "has_more": has_more,
-                "next_start_row": start_row + row_limit if has_more else None,
+                "next_start_row": start_row + effective_row_limit if has_more else None,
             },
             "rows": rows,
         })
@@ -1244,8 +1276,8 @@ async def compare_search_periods(
         }
         
         # Execute requests
-        period1_response = service.searchanalytics().query(siteUrl=site_url, body=period1_request).execute()
-        period2_response = service.searchanalytics().query(siteUrl=site_url, body=period2_request).execute()
+        period1_response = await _execute(service.searchanalytics().query(siteUrl=site_url, body=period1_request))
+        period2_response = await _execute(service.searchanalytics().query(siteUrl=site_url, body=period2_request))
         
         period1_rows = period1_response.get("rows", [])
         period2_rows = period2_response.get("rows", [])
@@ -1380,7 +1412,7 @@ async def get_search_by_page_query(
         }
         
         # Execute request
-        response = service.searchanalytics().query(siteUrl=site_url, body=request).execute()
+        response = await _execute(service.searchanalytics().query(siteUrl=site_url, body=request))
         
         if not response.get("rows"):
             return f"No search data found for page {page_url} in the last {days} days."
@@ -1418,7 +1450,7 @@ async def get_search_by_page_query(
         return f"Error retrieving page query data: {str(e)}"
 
 @mcp.tool()
-async def list_sitemaps_enhanced(site_url: str, sitemap_index: str = None) -> str:
+async def list_sitemaps_enhanced(site_url: str, sitemap_index: str | None = None) -> str:
     """
     List all sitemaps for a specific Search Console property with detailed information.
     
@@ -1433,10 +1465,10 @@ async def list_sitemaps_enhanced(site_url: str, sitemap_index: str = None) -> st
         
         # Get sitemaps list
         if sitemap_index:
-            sitemaps = service.sitemaps().list(siteUrl=site_url, sitemapIndex=sitemap_index).execute()
+            sitemaps = await _execute(service.sitemaps().list(siteUrl=site_url, sitemapIndex=sitemap_index))
             source = f"child sitemaps from index: {sitemap_index}"
         else:
-            sitemaps = service.sitemaps().list(siteUrl=site_url).execute()
+            sitemaps = await _execute(service.sitemaps().list(siteUrl=site_url))
             source = "all submitted sitemaps"
         
         if not sitemaps.get("sitemap"):
@@ -1500,7 +1532,7 @@ async def get_sitemap_details(site_url: str, sitemap_url: str) -> str:
         service = get_gsc_service()
         
         # Get sitemap details
-        details = service.sitemaps().get(siteUrl=site_url, feedpath=sitemap_url).execute()
+        details = await _execute(service.sitemaps().get(siteUrl=site_url, feedpath=sitemap_url))
         
         if not details:
             return f"No details found for sitemap {sitemap_url}."
@@ -1553,11 +1585,11 @@ async def submit_sitemap(site_url: str, sitemap_url: str) -> str:
         service = get_gsc_service()
         
         # Submit the sitemap
-        service.sitemaps().submit(siteUrl=site_url, feedpath=sitemap_url).execute()
+        await _execute(service.sitemaps().submit(siteUrl=site_url, feedpath=sitemap_url))
         
         # Verify submission by getting details
         try:
-            details = service.sitemaps().get(siteUrl=site_url, feedpath=sitemap_url).execute()
+            details = await _execute(service.sitemaps().get(siteUrl=site_url, feedpath=sitemap_url))
             
             # Format response
             result_lines = [f"Successfully submitted sitemap: {sitemap_url}"]
@@ -1606,7 +1638,7 @@ async def delete_sitemap(site_url: str, sitemap_url: str) -> str:
         
         # First check if the sitemap exists
         try:
-            service.sitemaps().get(siteUrl=site_url, feedpath=sitemap_url).execute()
+            await _execute(service.sitemaps().get(siteUrl=site_url, feedpath=sitemap_url))
         except Exception as e:
             if "404" in str(e):
                 return f"Sitemap not found: {sitemap_url}. It may have already been deleted or was never submitted."
@@ -1614,7 +1646,7 @@ async def delete_sitemap(site_url: str, sitemap_url: str) -> str:
                 raise e
         
         # Delete the sitemap
-        service.sitemaps().delete(siteUrl=site_url, feedpath=sitemap_url).execute()
+        await _execute(service.sitemaps().delete(siteUrl=site_url, feedpath=sitemap_url))
         
         return f"Successfully deleted sitemap: {sitemap_url}\n\nNote: This only removes the sitemap from Search Console. Any URLs already indexed will remain in Google's index."
     
@@ -1622,7 +1654,7 @@ async def delete_sitemap(site_url: str, sitemap_url: str) -> str:
         return f"Error deleting sitemap: {str(e)}"
 
 @mcp.tool()
-async def manage_sitemaps(site_url: str, action: str, sitemap_url: str = None, sitemap_index: str = None) -> str:
+async def manage_sitemaps(site_url: str, action: str, sitemap_url: str | None = None, sitemap_index: str | None = None) -> str:
     """
     All-in-one tool to manage sitemaps (list, get details, submit, delete).
     
